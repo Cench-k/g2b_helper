@@ -406,9 +406,14 @@ def calc_optimal_bid(
 
 
 def format_won(amount: float) -> str:
-    """금액 포맷 (억/만원 단위)"""
+    """금액 포맷 (억/만원 단위 — 간략 표시용)"""
     if amount >= 1_0000_0000:
         return f"{amount / 1_0000_0000:.2f}억원"
     elif amount >= 10000:
         return f"{amount / 10000:.0f}만원"
     return f"{amount:,.0f}원"
+
+
+def format_won_exact(amount: float) -> str:
+    """금액 포맷 (1원 단위 정확 표시)"""
+    return f"{int(amount):,}원"

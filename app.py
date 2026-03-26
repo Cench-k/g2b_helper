@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from api.g2b_api import G2BAPI
-from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, calc_optimal_bid
+from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, format_won_exact, calc_optimal_bid
 from analysis.demo_data import get_demo_bid_list, get_demo_winner_list, get_demo_bid_by_no
 
 st.set_page_config(
@@ -256,13 +256,16 @@ border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center;">
   <div style="font-size:14px;opacity:.85;margin-bottom:6px">
     🎯 단일 최적 투찰가 &nbsp;—&nbsp; {optimal['comp_label']}{comp_hint}
   </div>
-  <div style="font-size:36px;font-weight:900;letter-spacing:-1px;margin-bottom:8px">
-    {format_won(optimal['optimal_bid'])}
+  <div style="font-size:36px;font-weight:900;letter-spacing:-1px;margin-bottom:4px">
+    {format_won_exact(optimal['optimal_bid'])}
+  </div>
+  <div style="font-size:15px;opacity:.75;margin-bottom:8px">
+    ({format_won(optimal['optimal_bid'])})
   </div>
   <div style="font-size:13px;opacity:.8">
     사정률 {optimal['sajeong']:.3f}%
     &nbsp;|&nbsp; 유효 확률 {optimal['valid_prob']:.1f}%
-    &nbsp;|&nbsp; 산출 범위 {format_won(optimal['opt_low'])} ~ {format_won(optimal['opt_high'])}
+    &nbsp;|&nbsp; 산출 범위 {format_won_exact(optimal['opt_low'])} ~ {format_won_exact(optimal['opt_high'])}
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -289,8 +292,11 @@ border-radius:14px;padding:22px 28px;margin-bottom:12px;">
   <div style="font-size:13px;opacity:.85;margin-bottom:6px">
     🔒 안전구간 — 어떤 예정가격이 나와도 투찰 유효 (유효 확률 100%)
   </div>
-  <div style="font-size:26px;font-weight:800;margin-bottom:6px">
-    {format_won(r['safe_low'])} ~ {format_won(r['safe_high'])}
+  <div style="font-size:22px;font-weight:800;margin-bottom:2px">
+    {format_won_exact(r['safe_low'])} ~ {format_won_exact(r['safe_high'])}
+  </div>
+  <div style="font-size:13px;opacity:.75;margin-bottom:4px">
+    ({format_won(r['safe_low'])} ~ {format_won(r['safe_high'])})
   </div>
   <div style="font-size:13px;opacity:.8">
     사정률 {r['sajeong_safe_low']:.3f}% ~ {r['sajeong_safe_high']:.3f}%
@@ -307,8 +313,11 @@ border-radius:14px;padding:22px 28px;margin-bottom:12px;">
   <div style="font-size:13px;opacity:.85;margin-bottom:6px">
     ⭐ 최적 투찰 구간 — 90% 확률 안전구간{' + 과거 통계 반영' if stats else ''}
   </div>
-  <div style="font-size:26px;font-weight:800;margin-bottom:6px">
-    {format_won(r['safe_low_p90'])} ~ {format_won(r['safe_high_p90'])}
+  <div style="font-size:22px;font-weight:800;margin-bottom:2px">
+    {format_won_exact(r['safe_low_p90'])} ~ {format_won_exact(r['safe_high_p90'])}
+  </div>
+  <div style="font-size:13px;opacity:.75;margin-bottom:4px">
+    ({format_won(r['safe_low_p90'])} ~ {format_won(r['safe_high_p90'])})
   </div>
   <div style="font-size:13px;opacity:.8">
     사정률 {r['safe_low_p90']/r['base_price']*100:.3f}% ~ {r['safe_high_p90']/r['base_price']*100:.3f}%
