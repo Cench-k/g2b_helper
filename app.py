@@ -279,13 +279,13 @@ border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center;">
 
             # ── 상단 요약 지표 ──────────────────────────────────────────
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("기초금액",       format_won(r["base_price"]))
-            c2.metric("예정가격 (평균)", format_won(r["expected_price_mean"]),
+            c1.metric("기초금액",       format_won_exact(r["base_price"]))
+            c2.metric("예정가격 (평균)", format_won_exact(r["expected_price_mean"]),
                       f"사정률 {r['expected_price_mean']/r['base_price']*100:.2f}%")
-            c3.metric("낙찰하한금액 (평균)", format_won(r["award_floor_mean"]),
+            c3.metric("낙찰하한금액 (평균)", format_won_exact(r["award_floor_mean"]),
                       f"하한율 {r['lower_rate_pct']}%")
             c4.metric("안전구간 크기",
-                      format_won(r["safe_high"] - r["safe_low"]) if r["safe_exists"] else "구간 없음",
+                      format_won_exact(r["safe_high"] - r["safe_low"]) if r["safe_exists"] else "구간 없음",
                       f"{r['sajeong_safe_low']:.2f}% ~ {r['sajeong_safe_high']:.2f}%" if r["safe_exists"] else "")
 
             st.markdown("---")
@@ -354,7 +354,7 @@ border-radius:8px;padding:16px 20px;margin-bottom:12px;">
     📊 {best_label} &nbsp;—&nbsp; {filter_desc}{demo_label}
   </div>
   <div style="font-size:22px;font-weight:700;color:#1f3c88">
-    {format_won(best_low)} ~ {format_won(best_high)}
+    {format_won_exact(best_low)} ~ {format_won_exact(best_high)}
   </div>
   <div style="font-size:12px;color:#888;margin-top:4px">
     최빈 낙찰률 {stats['mode_range'][0]}~{stats['mode_range'][1]}%
@@ -464,7 +464,7 @@ border-radius:8px;padding:16px 20px;margin-bottom:12px;">
                     ],
                 }
                 detail_df = pd.DataFrame(rows_data)
-                detail_df["금액(표시)"] = detail_df["금액"].apply(format_won)
+                detail_df["금액(표시)"] = detail_df["금액"].apply(format_won_exact)
                 detail_df["금액(원)"]   = detail_df["금액"].apply(lambda x: f"{x:,.0f}")
                 detail_df["사정률(%)"]  = detail_df["금액"].apply(
                     lambda x: f"{x / r['base_price'] * 100:.3f}%"
