@@ -78,9 +78,15 @@ def calc_bid_range(
     safe_mid  = (safe_low + safe_high) / 2
     safe_exists = safe_high > safe_low   # 안전구간이 존재하는지 여부
 
-    # 90% 확률 안전구간 (극단값 제외 — 현실적 안전구간)
-    safe_low_p90  = expected_p90 * lower_rate
-    safe_high_p90 = expected_p10
+    # 경쟁력 투찰 구간: 안전구간 하단 40% (낮을수록 경쟁력 ↑)
+    # 안전구간이 없으면 평균낙찰하한금액 ± 소폭 완충
+    if safe_exists:
+        _band = (safe_high - safe_low) * 0.40
+        safe_low_p90  = safe_low
+        safe_high_p90 = safe_low + _band
+    else:
+        safe_low_p90  = expected_mean * lower_rate
+        safe_high_p90 = expected_mean * lower_rate * 1.015
     safe_mid_p90  = (safe_low_p90 + safe_high_p90) / 2
 
     # 각 투찰가별 유효 확률 계산 (시뮬레이션 분포 기반)
@@ -412,12 +418,16 @@ def calc_optimal_bid(
     valid_prob = float(((optimal >= dist * lr) & (optimal <= dist)).mean() * 100)
     sajeong    = optimal / base * 100
 
+    # 단일 최적 투찰가 ±1% 협폭 범위 (opt_low/opt_high는 산출 근거 범위)
+    band_low  = max(opt_low,  optimal * 0.990)
+    band_high = min(opt_high, optimal * 1.010)
+
     return {
         "optimal_bid":      optimal,
         "sajeong":          sajeong,
         "valid_prob":       valid_prob,
-        "opt_low":          opt_low,
-        "opt_high":         opt_high,
+        "opt_low":          band_low,
+        "opt_high":         band_high,
         "position":         position,
         "comp_label":       comp_label,
         "competitor_count": competitor_count,

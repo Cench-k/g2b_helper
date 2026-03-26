@@ -317,7 +317,7 @@ border-radius:14px;padding:22px 28px;margin-bottom:12px;">
 <div style="background:linear-gradient(135deg,#1f3c88,#3498db);color:white;
 border-radius:14px;padding:22px 28px;margin-bottom:12px;">
   <div style="font-size:13px;opacity:.85;margin-bottom:6px">
-    ⭐ 최적 투찰 구간 — 90% 확률 안전구간{' + 과거 통계 반영' if stats else ''}
+    ⭐ 경쟁력 투찰 구간 — 안전구간 하단 (낮을수록 경쟁력 ↑){' + 과거 통계 반영' if stats else ''}
   </div>
   <div style="font-size:22px;font-weight:800;margin-bottom:2px">
     {format_won_exact(r['safe_low_p90'])} ~ {format_won_exact(r['safe_high_p90'])}
@@ -327,8 +327,7 @@ border-radius:14px;padding:22px 28px;margin-bottom:12px;">
   </div>
   <div style="font-size:13px;opacity:.8">
     사정률 {r['safe_low_p90']/r['base_price']*100:.3f}% ~ {r['safe_high_p90']/r['base_price']*100:.3f}%
-    &nbsp;|&nbsp; 하단: 유효확률 {r.get('safe_low_prob',0):.1f}%
-    &nbsp;|&nbsp; 중간: 유효확률 {r.get('safe_mid_prob',0):.1f}%
+    &nbsp;|&nbsp; 유효확률 100% 구간의 하단 40% — 최저가 경쟁 유리
   </div>
 </div>""", unsafe_allow_html=True)
 
