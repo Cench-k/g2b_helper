@@ -132,14 +132,34 @@ class G2BAPI:
     def get_bid_by_no(self, bid_no: str) -> dict | None:
         """
         공고번호로 조회
-        API가 bidNtceNo 필터를 지원하지 않으므로 클라이언트 사이드 필터링
-        하루 단위 역순 탐색 + 각 날짜 내 전체 페이지 순회 (하루 ~600건 = ~6페이지)
+        공고번호 앞 8자리(YYYYMMDD)로 날짜를 추정해 해당 월부터 검색 → 빠른 탐색
         """
         now = datetime.now()
         bid_no_clean = bid_no.split("-")[0].strip()
 
-        # 날짜 우선 탐색: 오늘부터 역순으로, 각 날짜에서 모든 공고유형 동시 탐색
-        for days_ago in range(0, 90):
+        # 공고번호에서 날짜 추정 (앞 8자리 = YYYYMMDD)
+        search_start_days = 0
+        try:
+            prefix = bid_no_clean[:8]
+            bid_dt = datetime.strptime(prefix, "%Y%m%d")
+            search_start_days = (now - bid_dt).days
+        except Exception:
+            try:
+                prefix = bid_no_clean[:6]
+                bid_dt = datetime.strptime(prefix + "01", "%Y%m%d")
+                search_start_days = (now - bid_dt).days
+            except Exception:
+                search_start_days = 0
+
+        # 추정 날짜 기준 ±7일 먼저 탐색, 그 후 전체 90일 순회
+        priority_days = list(range(
+            max(0, search_start_days - 3),
+            min(90, search_start_days + 8)
+        ))
+        remaining_days = [d for d in range(0, 90) if d not in priority_days]
+        search_order = priority_days + remaining_days
+
+        for days_ago in search_order:
             day_dt   = now - timedelta(days=days_ago)
             day_str  = _fmt_bid(day_dt)
             next_str = _fmt_bid(day_dt + timedelta(days=1))
