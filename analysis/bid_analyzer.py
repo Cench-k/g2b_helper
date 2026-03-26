@@ -338,6 +338,25 @@ def analyze_winner_stats(df: pd.DataFrame, base_price: float | None = None) -> d
     return result
 
 
+def estimate_competitor_count(winner_df: pd.DataFrame) -> dict | None:
+    """
+    과거 낙찰 데이터의 참가업체수로 경쟁사 수 추정
+    tiered_filter 적용 후 데이터를 넘기면 동일 기관·유사금액 기준으로 추정됨
+    """
+    if winner_df.empty or "참가업체수" not in winner_df.columns:
+        return None
+    vals = winner_df["참가업체수"][winner_df["참가업체수"] > 0]
+    if len(vals) < 3:
+        return None
+    return {
+        "median": int(round(vals.median())),
+        "mean":   round(float(vals.mean()), 1),
+        "min":    int(vals.min()),
+        "max":    int(vals.max()),
+        "sample": len(vals),
+    }
+
+
 def calc_optimal_bid(
     bid_result: dict,
     stats: dict | None = None,

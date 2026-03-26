@@ -89,9 +89,17 @@ def get_demo_winner_list(bid_type: str = "용역", rows: int = 100) -> pd.DataFr
     companies = [f"(주){x}기술" for x in ["한국", "대한", "서울", "동국", "미래",
                                           "정보", "시스템", "솔루션", "테크", "코리아"]]
 
+    # 공사종류별 현실적 경쟁사 수 분포
+    comp_params = {
+        "용역": (7, 4),
+        "물품": (5, 3),
+        "공사": (10, 5),
+    }
     mu, sigma = rate_params.get(bid_type, (88.5, 1.2))
+    comp_mu, comp_sigma = comp_params.get(bid_type, (7, 4))
     rates = np.random.normal(mu, sigma, rows)
     rates = np.clip(rates, mu - 3, mu + 5)
+    comp_counts = np.random.normal(comp_mu, comp_sigma, rows).clip(1, 50).astype(int)
 
     now = datetime.now()
     records = []
@@ -109,6 +117,7 @@ def get_demo_winner_list(bid_type: str = "용역", rows: int = 100) -> pd.DataFr
             "낙찰금액": int(award_amount),
             "낙찰률": round(float(rate), 3),
             "낙찰업체명": np.random.choice(companies),
+            "참가업체수": int(comp_counts[i]),
             "개찰일시": open_date.strftime("%Y/%m/%d %H:%M"),
         })
     return pd.DataFrame(records)

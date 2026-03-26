@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from api.g2b_api import G2BAPI
-from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, format_won_exact, calc_optimal_bid
+from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, format_won_exact, calc_optimal_bid, estimate_competitor_count
 from analysis.demo_data import get_demo_bid_list, get_demo_winner_list, get_demo_bid_by_no
 
 st.set_page_config(
@@ -174,10 +174,14 @@ if page == "💰 낙찰 예상가 계산기":
 
         st.markdown("---")
         competitor_count = st.number_input(
-            "예상 경쟁사 수 (0=모름)",
+            "예상 경쟁사 수 (0=과거 데이터 자동 추정)",
             min_value=0, max_value=100, value=0, step=1,
-            help="입찰에 참가할 것으로 예상되는 업체 수. 많을수록 최적 투찰가를 낮게 산출합니다.",
+            help="0이면 같은 기관·유사금액 과거 입찰의 참가업체수 중앙값을 자동 사용합니다.",
         )
+        if "last_result" in st.session_state:
+            _ec = st.session_state["last_result"].get("estimated_comp")
+            if _ec:
+                st.caption(f"📊 과거 유사 입찰 추정: **{_ec['median']}개사** (범위 {_ec['min']}~{_ec['max']}개사, {_ec['sample']}건 기준)")
 
         calc_btn = st.button("📊 계산하기", use_container_width=True, type="primary")
 
@@ -230,12 +234,8 @@ if page == "💰 낙찰 예상가 계산기":
                     result["stats_keyword"]   = keyword
                     result["stats_filter_desc"] = filter_desc
                     result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"])
-                    # 과거 평균 경쟁사 수
-                    if "참가업체수" in winner_df.columns:
-                        comp_vals = winner_df["참가업체수"][winner_df["참가업체수"] > 0]
-                        result["avg_competition"] = float(comp_vals.median()) if len(comp_vals) >= 3 else None
-                    else:
-                        result["avg_competition"] = None
+                    # 과거 데이터 기반 경쟁사 수 추정
+                    result["estimated_comp"] = estimate_competitor_count(winner_df)
                 st.session_state["last_result"] = result
             else:
                 result = st.session_state["last_result"]
@@ -244,11 +244,16 @@ if page == "💰 낙찰 예상가 계산기":
             stats = r.get("stats")
 
             # ── 단일 최적 투찰가 (경쟁률 반영) ─────────────────────────
-            optimal = calc_optimal_bid(r, stats, int(competitor_count))
-            avg_comp = r.get("avg_competition")
-            comp_hint = ""
-            if avg_comp and competitor_count == 0:
-                comp_hint = f" | 과거 평균 경쟁 {avg_comp:.0f}개사"
+            est_comp = r.get("estimated_comp")
+            # 경쟁사 수: 직접 입력 우선, 0이면 과거 데이터 추정값 자동 사용
+            effective_comp = int(competitor_count) if int(competitor_count) > 0 else (
+                est_comp["median"] if est_comp else 0
+            )
+            optimal = calc_optimal_bid(r, stats, effective_comp)
+            if est_comp:
+                comp_hint = f" | 과거 유사 입찰 {est_comp['sample']}건 기준 추정 (중앙값 {est_comp['median']}개사, 범위 {est_comp['min']}~{est_comp['max']}개사)"
+            else:
+                comp_hint = ""
 
             st.markdown(f"""
 <div style="background:linear-gradient(135deg,#6c3483,#a93226);color:white;
