@@ -131,75 +131,45 @@ class G2BAPI:
     # ── 공고번호로 상세 조회 ───────────────────────────────────────────────
     def get_bid_by_no(self, bid_no: str) -> dict | None:
         """
-        공고번호로 조회
-        공고번호 앞 8자리(YYYYMMDD)로 날짜를 추정해 해당 월부터 검색 → 빠른 탐색
+        bidNtceNo 파라미터로 직접 필터링 → 최대 12번 API 호출로 완료.
+        날짜 추정 후 ±7일 → ±21일 → ±60일 순으로 창을 넓혀가며 재시도.
         """
         now = datetime.now()
         bid_no_clean = bid_no.split("-")[0].strip()
 
-        # 공고번호에서 날짜 추정 (앞 8자리 = YYYYMMDD)
-        search_start_days = 0
-        try:
-            prefix = bid_no_clean[:8]
-            bid_dt = datetime.strptime(prefix, "%Y%m%d")
-            search_start_days = (now - bid_dt).days
-        except Exception:
+        # 공고번호 앞자리에서 날짜 추정
+        bid_dt = None
+        for chars in [8, 6]:
             try:
-                prefix = bid_no_clean[:6]
-                bid_dt = datetime.strptime(prefix + "01", "%Y%m%d")
-                search_start_days = (now - bid_dt).days
+                prefix = bid_no_clean[:chars]
+                if chars == 6:
+                    prefix += "01"
+                bid_dt = datetime.strptime(prefix, "%Y%m%d")
+                break
             except Exception:
-                search_start_days = 0
+                continue
+        if bid_dt is None:
+            bid_dt = now - timedelta(days=30)
 
-        # 추정 날짜 기준 ±7일 먼저 탐색, 그 후 전체 90일 순회
-        priority_days = list(range(
-            max(0, search_start_days - 3),
-            min(90, search_start_days + 8)
-        ))
-        remaining_days = [d for d in range(0, 90) if d not in priority_days]
-        search_order = priority_days + remaining_days
-
-        for days_ago in search_order:
-            day_dt   = now - timedelta(days=days_ago)
-            day_str  = _fmt_bid(day_dt)
-            next_str = _fmt_bid(day_dt + timedelta(days=1))
+        # ±7일 → ±21일 → ±60일 순으로 창을 넓혀 재시도 (공사종류 3개 × 3단계 = 최대 9번)
+        for half_window in [7, 21, 60]:
+            start_str = _fmt_bid(bid_dt - timedelta(days=half_window))
+            end_str   = _fmt_bid(min(bid_dt + timedelta(days=half_window), now))
 
             for bid_type, op in BID_OPS.items():
                 url = f"{BID_BASE}/{op}"
                 try:
-                    # 페이지 1 조회 + totalCount 파악
-                    first = self._get(url, {
+                    data = self._get(url, {
                         "numOfRows": 100, "pageNo": 1,
                         "inqryDiv": "1",
-                        "inqryBgnDt": day_str,
-                        "inqryEndDt": next_str,
+                        "inqryBgnDt": start_str,
+                        "inqryEndDt": end_str,
+                        "bidNtceNo":  bid_no_clean,
                     })
-                    total = int(
-                        first.get("response", {}).get("body", {}).get("totalCount", 0)
-                    )
-                    if total == 0:
-                        continue
-
-                    total_pages = (total + 99) // 100  # 올림 나눗셈
-
-                    # 페이지 1 결과 확인
-                    for item in self._items(first):
+                    for item in self._items(data):
                         no = item.get("bidNtceNo", "")
                         if no == bid_no_clean or no == bid_no:
                             return self._parse_bid_detail(item, bid_type)
-
-                    # 나머지 페이지 순회 (최대 30페이지 = 3,000건/일)
-                    for page in range(2, min(total_pages + 1, 31)):
-                        data = self._get(url, {
-                            "numOfRows": 100, "pageNo": page,
-                            "inqryDiv": "1",
-                            "inqryBgnDt": day_str,
-                            "inqryEndDt": next_str,
-                        })
-                        for item in self._items(data):
-                            no = item.get("bidNtceNo", "")
-                            if no == bid_no_clean or no == bid_no:
-                                return self._parse_bid_detail(item, bid_type)
                 except Exception:
                     continue
         return None
