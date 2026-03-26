@@ -189,9 +189,10 @@ class G2BAPI:
             try: return float(v) if v else None
             except: return None
 
-        # 기초금액: 공사는 presmptPrce(추정금액) 사용, 없으면 bdgtAmt
-        base = (num(item.get("presmptPrce"))
+        # 기초금액: bssAmt(기초금액) 우선, 없으면 asignBdgtAmt → presmptPrce 순으로 fallback
+        base = (num(item.get("bssAmt"))
                 or num(item.get("asignBdgtAmt"))
+                or num(item.get("presmptPrce"))
                 or num(item.get("bdgtAmt")))
         # 복수예가 후보 수 / 추첨 수 (공고마다 다를 수 있음, 기본 15개/2개)
         total_prd = int(item.get("totPrdprcNum") or 15)
