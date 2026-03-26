@@ -151,11 +151,16 @@ class G2BAPI:
         if bid_dt is None:
             bid_dt = now - timedelta(days=30)
 
-        # ±7일 → ±21일 → ±60일 순으로 창을 넓혀 재시도 (공사종류 3개 × 3단계 = 최대 9번)
-        for half_window in [7, 21, 60]:
-            start_str = _fmt_bid(bid_dt - timedelta(days=half_window))
-            end_str   = _fmt_bid(min(bid_dt + timedelta(days=half_window), now))
+        # API 최대 14일 창 제한 → 중심 날짜에서 앞뒤로 14일씩 이동하며 탐색
+        # 탐색 창: [bid_dt-7, bid_dt+7] → [bid_dt-21, bid_dt-7] → [bid_dt+7, bid_dt+21] → ...
+        windows = []
+        for offset in [0, -14, 14, -28, 28]:
+            center = bid_dt + timedelta(days=offset)
+            s = _fmt_bid(center - timedelta(days=7))
+            e = _fmt_bid(min(center + timedelta(days=7), now))
+            windows.append((s, e))
 
+        for start_str, end_str in windows:
             for bid_type, op in BID_OPS.items():
                 url = f"{BID_BASE}/{op}"
                 try:
