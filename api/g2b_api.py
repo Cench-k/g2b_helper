@@ -209,11 +209,17 @@ class G2BAPI:
             try: return float(v) if v else None
             except: return None
 
-        # 기초금액: bssAmt(기초금액) 우선, 없으면 asignBdgtAmt → presmptPrce 순으로 fallback
-        base = (num(item.get("bssAmt"))
-                or num(item.get("asignBdgtAmt"))
-                or num(item.get("presmptPrce"))
-                or num(item.get("bdgtAmt")))
+        # 기초금액 = 추정가격(VAT 제외) + 부가세 = 나라장터 공종별 "금액(추정가격+부가세)"
+        presmpt = num(item.get("presmptPrce"))
+        vat     = num(item.get("VAT")) or num(item.get("indutyVAT"))
+        if presmpt and vat:
+            base = presmpt + vat
+        elif presmpt:
+            base = round(presmpt * 1.1)  # VAT 10% 추정
+        else:
+            base = (num(item.get("bssAmt"))
+                    or num(item.get("asignBdgtAmt"))
+                    or num(item.get("bdgtAmt")))
         # 복수예가 후보 수 / 추첨 수 (공고마다 다를 수 있음, 기본 15개/2개)
         total_prd = int(item.get("totPrdprcNum") or 15)
         draw_prd  = int(item.get("drwtPrdprcNum") or 2)
