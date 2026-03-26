@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from api.g2b_api import G2BAPI
 from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, format_won_exact, calc_optimal_bid, estimate_competitor_count
 from analysis.demo_data import get_demo_bid_list, get_demo_winner_list, get_demo_bid_by_no
+from db.supabase_client import save_bid_record, load_bid_records, delete_bid_record
 
 st.set_page_config(
     page_title="나라장터 낙찰 도우미",
@@ -56,7 +57,7 @@ st.sidebar.title("🏛️ 나라장터 낙찰 도우미")
 st.sidebar.markdown("---")
 page = st.sidebar.radio(
     "메뉴",
-    ["💰 낙찰 예상가 계산기", "🔍 입찰공고 검색", "📊 낙찰 통계 분석"],
+    ["💰 낙찰 예상가 계산기", "🔍 입찰공고 검색", "📊 낙찰 통계 분석", "📁 내 입찰 기록"],
     label_visibility="collapsed",
 )
 st.sidebar.markdown("---")
@@ -665,3 +666,175 @@ elif page == "📊 낙찰 통계 분석":
                     file_name=f"낙찰통계_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                     mime="text/csv",
                 )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PAGE 4: 내 입찰 기록
+# ══════════════════════════════════════════════════════════════════════════
+elif page == "📁 내 입찰 기록":
+    st.title("📁 내 입찰 기록")
+    st.caption("내 투찰 이력 누적 관리 및 패턴 분석")
+
+    # ── 사용자 ID (사업자번호) ──────────────────────────────────────────
+    user_id = st.text_input(
+        "사업자번호 (하이픈 없이)",
+        placeholder="예: 1234567890",
+        help="사용자 식별에 사용됩니다. 같은 번호로 입력해야 내 기록이 조회됩니다.",
+    )
+
+    if not user_id.strip():
+        st.info("사업자번호를 입력하면 내 입찰 기록을 조회하고 추가할 수 있습니다.")
+        st.stop()
+
+    user_id = user_id.strip().replace("-", "")
+
+    tab_view, tab_add = st.tabs(["📋 기록 조회 및 분석", "➕ 기록 추가"])
+
+    # ── 탭 1: 조회 및 분석 ────────────────────────────────────────────
+    with tab_view:
+        records = load_bid_records(user_id)
+
+        if not records:
+            st.info("아직 입찰 기록이 없습니다. '기록 추가' 탭에서 추가해주세요.")
+        else:
+            df_my = pd.DataFrame(records)
+
+            # 요약 지표
+            total = len(df_my)
+            won = len(df_my[df_my["result"] == "낙찰"])
+            win_rate = won / total * 100 if total > 0 else 0
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("총 입찰 횟수", f"{total}건")
+            c2.metric("낙찰 횟수", f"{won}건")
+            c3.metric("낙찰률", f"{win_rate:.1f}%")
+            if "my_sajeong" in df_my.columns:
+                won_df = df_my[df_my["result"] == "낙찰"]["my_sajeong"].dropna()
+                c4.metric("낙찰 평균 사정률", f"{won_df.mean():.3f}%" if len(won_df) > 0 else "-")
+
+            st.markdown("---")
+
+            # 사정률 분포 차트
+            if "my_sajeong" in df_my.columns and df_my["my_sajeong"].notna().sum() > 1:
+                fig = go.Figure()
+                won_mask = df_my["result"] == "낙찰"
+                fig.add_trace(go.Scatter(
+                    x=df_my[won_mask]["open_date"],
+                    y=df_my[won_mask]["my_sajeong"],
+                    mode="markers", name="낙찰",
+                    marker=dict(color="#2ecc71", size=10, symbol="circle"),
+                ))
+                fig.add_trace(go.Scatter(
+                    x=df_my[~won_mask]["open_date"],
+                    y=df_my[~won_mask]["my_sajeong"],
+                    mode="markers", name="탈락",
+                    marker=dict(color="#e74c3c", size=10, symbol="x"),
+                ))
+                fig.update_layout(
+                    title="내 투찰 사정률 추이",
+                    xaxis_title="개찰일", yaxis_title="사정률 (%)",
+                    height=350, margin=dict(t=40, b=0),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            # 기록 테이블
+            display_cols = ["open_date", "bid_name", "agency", "bid_type",
+                            "base_price", "my_bid_price", "my_sajeong", "result", "memo"]
+            display_cols = [c for c in display_cols if c in df_my.columns]
+            rename_map = {
+                "open_date": "개찰일", "bid_name": "공고명", "agency": "공고기관",
+                "bid_type": "공사종류", "base_price": "기초금액",
+                "my_bid_price": "내 투찰가", "my_sajeong": "사정률(%)",
+                "result": "결과", "memo": "메모",
+            }
+            disp = df_my[display_cols].rename(columns=rename_map)
+            for col in ["기초금액", "내 투찰가"]:
+                if col in disp.columns:
+                    disp[col] = disp[col].apply(
+                        lambda x: format_won_exact(x) if pd.notna(x) and x > 0 else "-"
+                    )
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+
+            # 삭제
+            with st.expander("🗑️ 기록 삭제"):
+                del_id = st.number_input("삭제할 기록 ID", min_value=1, step=1)
+                if st.button("삭제", type="secondary"):
+                    if delete_bid_record(int(del_id)):
+                        st.success("삭제됐습니다.")
+                        st.rerun()
+
+            # CSV 다운로드
+            csv = df_my.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                "⬇️ CSV 다운로드",
+                data=csv.encode("utf-8-sig"),
+                file_name=f"내입찰기록_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+            )
+
+    # ── 탭 2: 기록 추가 ───────────────────────────────────────────────
+    with tab_add:
+        st.subheader("입찰 기록 추가")
+
+        # 공고번호로 자동 불러오기
+        with st.expander("🔎 공고번호로 자동 불러오기", expanded=True):
+            c_no, c_btn = st.columns([3, 1])
+            with c_no:
+                add_bid_no = st.text_input("공고번호", key="add_bid_no",
+                                           placeholder="예: 20250123456-00")
+            with c_btn:
+                add_search = st.button("불러오기", key="add_search_btn")
+            if add_search and add_bid_no.strip():
+                with st.spinner("공고 조회 중..."):
+                    info = None
+                    try:
+                        info = api.get_bid_by_no(add_bid_no.strip())
+                    except Exception:
+                        pass
+                    if not info:
+                        info = get_demo_bid_by_no(add_bid_no.strip())
+                st.session_state["add_bid_info"] = info
+
+        _add_info = st.session_state.get("add_bid_info", {})
+
+        with st.form("add_record_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                f_bid_no   = st.text_input("공고번호", value=_add_info.get("공고번호", ""))
+                f_bid_name = st.text_input("공고명",   value=_add_info.get("공고명", ""))
+                f_agency   = st.text_input("공고기관", value=_add_info.get("공고기관", ""))
+                f_bid_type = st.selectbox("공사종류", ["용역", "물품", "공사"],
+                    index=["용역","물품","공사"].index(_add_info.get("공사종류","용역"))
+                    if _add_info.get("공사종류") in ["용역","물품","공사"] else 0)
+            with col2:
+                f_base     = st.number_input("기초금액 (원)", min_value=0,
+                                             value=int(_add_info.get("기초금액") or 0), step=1_000_000)
+                f_my_bid   = st.number_input("내 투찰가 (원)", min_value=0, step=1000)
+                f_sajeong  = round(f_my_bid / f_base * 100, 3) if f_base > 0 else 0.0
+                st.metric("사정률", f"{f_sajeong:.3f}%")
+                f_result   = st.selectbox("결과", ["낙찰", "탈락"])
+                f_date     = st.date_input("개찰일", value=datetime.now().date())
+                f_memo     = st.text_input("메모 (선택)")
+
+            submitted = st.form_submit_button("💾 저장", use_container_width=True, type="primary")
+            if submitted:
+                if not f_my_bid:
+                    st.error("투찰가를 입력해주세요.")
+                else:
+                    rec = {
+                        "user_id":      user_id,
+                        "bid_no":       f_bid_no,
+                        "bid_name":     f_bid_name,
+                        "agency":       f_agency,
+                        "bid_type":     f_bid_type,
+                        "base_price":   int(f_base),
+                        "my_bid_price": int(f_my_bid),
+                        "my_sajeong":   f_sajeong,
+                        "result":       f_result,
+                        "open_date":    f_date.isoformat(),
+                        "memo":         f_memo,
+                    }
+                    if save_bid_record(rec):
+                        st.success("저장됐습니다!")
+                        st.session_state.pop("add_bid_info", None)
+                        st.rerun()
