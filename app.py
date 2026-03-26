@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from api.g2b_api import G2BAPI
-from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won
+from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, calc_optimal_bid
 from analysis.demo_data import get_demo_bid_list, get_demo_winner_list, get_demo_bid_by_no
 
 st.set_page_config(
@@ -172,6 +172,13 @@ if page == "💰 낙찰 예상가 계산기":
             base_price_input = int(base_eok * 1_0000_0000)
             st.info(f"= {base_price_input:,}원")
 
+        st.markdown("---")
+        competitor_count = st.number_input(
+            "예상 경쟁사 수 (0=모름)",
+            min_value=0, max_value=100, value=0, step=1,
+            help="입찰에 참가할 것으로 예상되는 업체 수. 많을수록 최적 투찰가를 낮게 산출합니다.",
+        )
+
         calc_btn = st.button("📊 계산하기", use_container_width=True, type="primary")
 
         st.markdown("---")
@@ -223,12 +230,42 @@ if page == "💰 낙찰 예상가 계산기":
                     result["stats_keyword"]   = keyword
                     result["stats_filter_desc"] = filter_desc
                     result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"])
+                    # 과거 평균 경쟁사 수
+                    if "참가업체수" in winner_df.columns:
+                        comp_vals = winner_df["참가업체수"][winner_df["참가업체수"] > 0]
+                        result["avg_competition"] = float(comp_vals.median()) if len(comp_vals) >= 3 else None
+                    else:
+                        result["avg_competition"] = None
                 st.session_state["last_result"] = result
             else:
                 result = st.session_state["last_result"]
 
             r     = result
             stats = r.get("stats")
+
+            # ── 단일 최적 투찰가 (경쟁률 반영) ─────────────────────────
+            optimal = calc_optimal_bid(r, stats, int(competitor_count))
+            avg_comp = r.get("avg_competition")
+            comp_hint = ""
+            if avg_comp and competitor_count == 0:
+                comp_hint = f" | 과거 평균 경쟁 {avg_comp:.0f}개사"
+
+            st.markdown(f"""
+<div style="background:linear-gradient(135deg,#6c3483,#a93226);color:white;
+border-radius:16px;padding:24px 28px;margin-bottom:16px;text-align:center;">
+  <div style="font-size:14px;opacity:.85;margin-bottom:6px">
+    🎯 단일 최적 투찰가 &nbsp;—&nbsp; {optimal['comp_label']}{comp_hint}
+  </div>
+  <div style="font-size:36px;font-weight:900;letter-spacing:-1px;margin-bottom:8px">
+    {format_won(optimal['optimal_bid'])}
+  </div>
+  <div style="font-size:13px;opacity:.8">
+    사정률 {optimal['sajeong']:.3f}%
+    &nbsp;|&nbsp; 유효 확률 {optimal['valid_prob']:.1f}%
+    &nbsp;|&nbsp; 산출 범위 {format_won(optimal['opt_low'])} ~ {format_won(optimal['opt_high'])}
+  </div>
+</div>""", unsafe_allow_html=True)
+
             st.subheader("분석 결과")
 
             # ── 상단 요약 지표 ──────────────────────────────────────────

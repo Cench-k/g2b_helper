@@ -1,4 +1,5 @@
 import requests
+import time
 import pandas as pd
 from datetime import datetime, timedelta
 import sys, os
@@ -35,25 +36,34 @@ class G2BAPI:
         self.key = API_KEY
 
     def _get(self, url: str, params: dict) -> dict:
-        params["serviceKey"] = self.key
-        params.setdefault("type", "json")
-        try:
-            r = requests.get(url, params=params, timeout=15)
-            r.raise_for_status()
-            data = r.json()
-            # 오류 응답 체크
-            if "nkoneps.com.response.ResponseError" in data:
-                err = data["nkoneps.com.response.ResponseError"]["header"]
-                raise ConnectionError(f"API 오류 {err['resultCode']}: {err['resultMsg']}")
-            return data
-        except requests.exceptions.Timeout:
-            raise ConnectionError("API 응답 시간 초과")
-        except requests.exceptions.HTTPError as e:
-            raise ConnectionError(f"HTTP 오류: {e}")
-        except ConnectionError:
-            raise
-        except Exception as e:
-            raise ConnectionError(f"API 호출 실패: {e}")
+        p = {**params, "serviceKey": self.key}
+        p.setdefault("type", "json")
+        for attempt in range(3):
+            try:
+                r = requests.get(url, params=p, timeout=15)
+                if r.status_code == 429:
+                    if attempt < 2:
+                        time.sleep(2 ** attempt + 1)
+                        continue
+                    raise ConnectionError("API 요청 한도 초과 (분당 요청 수 제한). 잠시 후 다시 시도하세요.")
+                r.raise_for_status()
+                data = r.json()
+                if "nkoneps.com.response.ResponseError" in data:
+                    err = data["nkoneps.com.response.ResponseError"]["header"]
+                    raise ConnectionError(f"API 오류 {err['resultCode']}: {err['resultMsg']}")
+                return data
+            except requests.exceptions.Timeout:
+                if attempt < 2:
+                    time.sleep(1)
+                    continue
+                raise ConnectionError("API 응답 시간 초과")
+            except requests.exceptions.HTTPError as e:
+                raise ConnectionError(f"HTTP 오류: {e}")
+            except ConnectionError:
+                raise
+            except Exception as e:
+                raise ConnectionError(f"API 호출 실패: {e}")
+        raise ConnectionError("API 재시도 실패")
 
     def _items(self, data: dict) -> list:
         items = data.get("response", {}).get("body", {}).get("items", [])
@@ -241,7 +251,6 @@ class G2BAPI:
             return pd.DataFrame()
         rows = []
         for item in items:
-            # opengCorpInfo: "업체명^사업자번호^대표자^낙찰금액^순위"
             corp_info = item.get("opengCorpInfo", "")
             award_amt = None
             corp_name = ""
@@ -252,6 +261,9 @@ class G2BAPI:
                     try: award_amt = float(parts[3])
                     except: pass
 
+            try: presmpt = float(item.get("presmptPrce") or 0) or None
+            except: presmpt = None
+
             rows.append({
                 "공고번호":   item.get("bidNtceNo", ""),
                 "공고명":    item.get("bidNtceNm", ""),
@@ -261,8 +273,12 @@ class G2BAPI:
                 "참가업체수": int(item.get("prtcptCnum") or 0),
                 "낙찰업체명": corp_name,
                 "낙찰금액":  award_amt,
+                "예정가격":  presmpt,
                 "진행상태":  item.get("progrsDivCdNm", ""),
             })
         df = pd.DataFrame(rows)
         df["낙찰금액"] = pd.to_numeric(df["낙찰금액"], errors="coerce")
+        df["예정가격"] = pd.to_numeric(df["예정가격"], errors="coerce")
+        mask = df["예정가격"].notna() & (df["예정가격"] > 0) & df["낙찰금액"].notna()
+        df.loc[mask, "낙찰률"] = (df.loc[mask, "낙찰금액"] / df.loc[mask, "예정가격"] * 100).round(3)
         return df

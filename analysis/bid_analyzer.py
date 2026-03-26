@@ -338,6 +338,73 @@ def analyze_winner_stats(df: pd.DataFrame, base_price: float | None = None) -> d
     return result
 
 
+def calc_optimal_bid(
+    bid_result: dict,
+    stats: dict | None = None,
+    competitor_count: int = 0,
+) -> dict:
+    """
+    단일 최적 투찰가 산출
+    - 안전구간(90%) ∩ 과거통계 범위에서 경쟁률 반영
+    - 복수예가 방식: 최저 유효입찰가 낙찰 → 경쟁 많을수록 하단 노림
+    """
+    low_90  = bid_result["safe_low_p90"]
+    high_90 = bid_result["safe_high_p90"]
+    base    = bid_result["base_price"]
+    dist    = np.array(bid_result["distribution"])
+    lr      = bid_result["lower_rate_pct"] / 100
+
+    # 1. 범위 결정: 안전구간(90%) ∩ 과거통계
+    if stats:
+        opt_low  = max(stats["recommend_low"],  low_90)
+        opt_high = min(stats["recommend_high"], high_90)
+        if opt_low >= opt_high:
+            opt_low, opt_high = low_90, high_90
+    else:
+        opt_low, opt_high = low_90, high_90
+
+    # 2. 경쟁률 기반 포지션 (0=하한, 1=상한)
+    if competitor_count <= 0:
+        position = 0.35
+        comp_label = "경쟁사 수 미입력"
+    elif competitor_count == 1:
+        position = 0.65
+        comp_label = "단독 입찰"
+    elif competitor_count <= 3:
+        position = 0.55
+        comp_label = f"{competitor_count}개사 (소수 경쟁)"
+    elif competitor_count <= 5:
+        position = 0.42
+        comp_label = f"{competitor_count}개사 (보통 경쟁)"
+    elif competitor_count <= 10:
+        position = 0.30
+        comp_label = f"{competitor_count}개사 (경쟁 심함)"
+    elif competitor_count <= 20:
+        position = 0.20
+        comp_label = f"{competitor_count}개사 (매우 경쟁)"
+    else:
+        position = 0.12
+        comp_label = f"{competitor_count}개사 (치열)"
+
+    optimal = opt_low + (opt_high - opt_low) * position
+    optimal = max(opt_low, min(opt_high, optimal))
+
+    # 3. 유효 확률 및 사정률
+    valid_prob = float(((optimal >= dist * lr) & (optimal <= dist)).mean() * 100)
+    sajeong    = optimal / base * 100
+
+    return {
+        "optimal_bid":      optimal,
+        "sajeong":          sajeong,
+        "valid_prob":       valid_prob,
+        "opt_low":          opt_low,
+        "opt_high":         opt_high,
+        "position":         position,
+        "comp_label":       comp_label,
+        "competitor_count": competitor_count,
+    }
+
+
 def format_won(amount: float) -> str:
     """금액 포맷 (억/만원 단위)"""
     if amount >= 1_0000_0000:

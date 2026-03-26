@@ -1,4 +1,10 @@
-API_KEY = "be409a58c354adca5848ee8ba7349582d68c447d4b4ec3f4b95dd10dc0eaacee"
+import os
+try:
+    import streamlit as st
+    API_KEY = st.secrets.get("G2B_API_KEY", os.environ.get("G2B_API_KEY", ""))
+except Exception:
+    API_KEY = os.environ.get("G2B_API_KEY", "")
+
 BASE_URL = "https://apis.data.go.kr/1230000"
 
 # 낙찰하한율 (예정가격 대비 %)
