@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from api.g2b_api import G2BAPI
 from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, format_won_exact, calc_optimal_bid, estimate_competitor_count
 from analysis.demo_data import get_demo_bid_list, get_demo_winner_list, get_demo_bid_by_no
-from db.supabase_client import save_bid_record, load_bid_records, delete_bid_record
+from db.supabase_client import save_bid_record, load_bid_records, delete_bid_record, cache_get_bid, cache_save_bid
 
 st.set_page_config(
     page_title="나라장터 낙찰 도우미",
@@ -101,13 +101,17 @@ if page == "💰 낙찰 예상가 계산기":
 
         if search_btn and bid_no_input.strip():
             with st.spinner("공고 조회 중..."):
-                info = None
-                try:
-                    info = api.get_bid_by_no(bid_no_input.strip())
-                except Exception:
-                    pass
+                bid_no_key = bid_no_input.strip()
+                info = cache_get_bid(bid_no_key)   # 1) DB 캐시 확인
                 if not info:
-                    info = get_demo_bid_by_no(bid_no_input.strip())
+                    try:
+                        info = api.get_bid_by_no(bid_no_key)  # 2) API 호출
+                        if info:
+                            cache_save_bid(bid_no_key, info)   # 결과 캐시 저장
+                    except Exception:
+                        pass
+                if not info:
+                    info = get_demo_bid_by_no(bid_no_key)
 
             # 불러오는 즉시 계산기에 적용
             st.session_state["apply_bid"] = info

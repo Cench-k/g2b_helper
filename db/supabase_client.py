@@ -49,3 +49,32 @@ def delete_bid_record(record_id: int) -> bool:
     except Exception as e:
         st.error(f"삭제 실패: {e}")
         return False
+
+
+# ── 공고 캐시 (API 트래픽 절감) ───────────────────────────────────────────
+def cache_get_bid(bid_no: str) -> dict | None:
+    """캐시된 공고 정보 조회 (없으면 None)"""
+    try:
+        res = (
+            get_client()
+            .table("bid_cache")
+            .select("data")
+            .eq("bid_no", bid_no)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]["data"]
+    except Exception:
+        pass
+    return None
+
+
+def cache_save_bid(bid_no: str, data: dict) -> None:
+    """공고 정보를 캐시에 저장 (upsert)"""
+    try:
+        get_client().table("bid_cache").upsert(
+            {"bid_no": bid_no, "data": data},
+            on_conflict="bid_no",
+        ).execute()
+    except Exception:
+        pass
