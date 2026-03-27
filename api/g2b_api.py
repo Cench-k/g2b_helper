@@ -131,52 +131,56 @@ class G2BAPI:
     # ── 공고번호로 상세 조회 ───────────────────────────────────────────────
     def get_bid_by_no(self, bid_no: str) -> dict | None:
         """
-        bidNtceNo 파라미터로 직접 필터링 → 최대 12번 API 호출로 완료.
-        날짜 추정 후 ±7일 → ±21일 → ±60일 순으로 창을 넓혀가며 재시도.
+        최근 90일을 14일씩 구간으로 나눠 페이지네이션으로 전수 탐색.
+        bidNtceNo API 파라미터가 서버 필터링 미지원이므로 클라이언트 직접 비교.
+        최신 구간부터 검색해 최근 공고는 빠르게 발견.
         """
         now = datetime.now()
         bid_no_clean = bid_no.split("-")[0].strip()
 
-        # 공고번호 앞자리에서 날짜 추정
-        bid_dt = None
-        for chars in [8, 6]:
-            try:
-                prefix = bid_no_clean[:chars]
-                if chars == 6:
-                    prefix += "01"
-                bid_dt = datetime.strptime(prefix, "%Y%m%d")
-                break
-            except Exception:
-                continue
-        if bid_dt is None:
-            bid_dt = now - timedelta(days=30)
-
-        # API 최대 14일 창 제한 → 중심 날짜에서 앞뒤로 14일씩 이동하며 탐색
-        # 탐색 창: [bid_dt-7, bid_dt+7] → [bid_dt-21, bid_dt-7] → [bid_dt+7, bid_dt+21] → ...
+        # 최근 90일을 14일씩 나눈 창 (최신 → 과거 순)
         windows = []
-        for offset in [0, -14, 14, -28, 28]:
-            center = bid_dt + timedelta(days=offset)
-            s = _fmt_bid(center - timedelta(days=7))
-            e = _fmt_bid(min(center + timedelta(days=7), now))
-            windows.append((s, e))
+        cur_end = now
+        while cur_end > now - timedelta(days=90):
+            cur_start = max(cur_end - timedelta(days=13), now - timedelta(days=90))
+            windows.append((_fmt_bid(cur_start), _fmt_bid(cur_end)))
+            cur_end = cur_start - timedelta(days=1)
+
+        ROWS = 500
+        MAX_PAGES = 4  # 구간당 앞뒤 각 2페이지 (최신·오래된 공고 모두 대응)
 
         for start_str, end_str in windows:
             for bid_type, op in BID_OPS.items():
                 url = f"{BID_BASE}/{op}"
+                base_params = {
+                    "numOfRows": ROWS,
+                    "inqryDiv": "1",
+                    "inqryBgnDt": start_str,
+                    "inqryEndDt": end_str,
+                }
+                # 총 건수 파악
                 try:
-                    data = self._get(url, {
-                        "numOfRows": 100, "pageNo": 1,
-                        "inqryDiv": "1",
-                        "inqryBgnDt": start_str,
-                        "inqryEndDt": end_str,
-                        "bidNtceNo":  bid_no_clean,
-                    })
-                    for item in self._items(data):
-                        no = item.get("bidNtceNo", "")
-                        if no == bid_no_clean or no == bid_no:
-                            return self._parse_bid_detail(item, bid_type)
+                    data = self._get(url, {**base_params, "pageNo": 1})
+                    total = int(data.get("response", {}).get("body", {}).get("totalCount", 0))
                 except Exception:
                     continue
+                if total == 0:
+                    continue
+
+                last_page = (total + ROWS - 1) // ROWS
+                # 마지막 페이지부터 역순으로 탐색 (최신 공고) + 앞쪽도 탐색
+                pages_to_check = list(range(last_page, max(last_page - MAX_PAGES, 0), -1))
+                pages_to_check += list(range(1, min(MAX_PAGES + 1, last_page)))
+
+                for page in pages_to_check:
+                    try:
+                        data = self._get(url, {**base_params, "pageNo": page})
+                        for item in self._items(data):
+                            no = item.get("bidNtceNo", "")
+                            if no == bid_no_clean or no == bid_no:
+                                return self._parse_bid_detail(item, bid_type)
+                    except Exception:
+                        continue
         return None
 
     def _parse_bid_detail(self, item: dict, bid_type: str) -> dict:
@@ -216,7 +220,7 @@ class G2BAPI:
             "추첨수":    draw_prd,
         }
 
-    # ── 낙찰 결과 조회 ─────────────────────────────────────────────────────
+    # ── 낙찰 결과 조회 (14일 제한 → 자동 분할 호출) ──────────────────────
     def get_winner_list(
         self,
         bid_type: str = "용역",
@@ -227,26 +231,49 @@ class G2BAPI:
         rows: int = 200,
     ) -> pd.DataFrame:
         now = datetime.now()
-        # 최대 조회 가능 기간: 14일
-        start = start_date or _fmt_win(now - timedelta(days=14))
-        end   = end_date   or _fmt_win(now)
+        start_str = start_date or _fmt_win(now - timedelta(days=14))
+        end_str   = end_date   or _fmt_win(now)
 
-        # 낙찰결과는 YYYYMMDDHHMM (12자리)
-        if len(start) == 8: start += "0000"
-        if len(end)   == 8: end   += "2359"
+        # 날짜 파싱 (YYYYMMDD 또는 YYYYMMDDHHMM 또는 YYYYMMDDHHMMSS)
+        def parse_dt(s: str) -> datetime:
+            s = s[:8]
+            return datetime.strptime(s, "%Y%m%d")
 
-        params = {
-            "numOfRows": rows, "pageNo": page,
-            "inqryDiv": "2",       # 개찰일자 기준
-            "inqryBgnDt": start[:12],
-            "inqryEndDt": end[:12],
-        }
-        if keyword:
-            params["bidNtceNm"] = keyword
+        dt_start = parse_dt(start_str)
+        dt_end   = parse_dt(end_str)
+
+        # 14일씩 구간 분할
+        CHUNK = timedelta(days=14)
+        windows = []
+        cur = dt_start
+        while cur < dt_end:
+            chunk_end = min(cur + CHUNK - timedelta(days=1), dt_end)
+            windows.append((cur, chunk_end))
+            cur = chunk_end + timedelta(days=1)
 
         url = f"{SCSBID_BASE}/{WIN_OPS.get(bid_type, WIN_OPS['용역'])}"
-        data = self._get(url, params)
-        return self._parse_winner(self._items(data))
+        all_items = []
+        rows_per_chunk = min(rows, 500)  # 구간당 최대 500건
+
+        for w_start, w_end in windows:
+            params = {
+                "numOfRows": rows_per_chunk, "pageNo": page,
+                "inqryDiv": "2",
+                "inqryBgnDt": w_start.strftime("%Y%m%d") + "0000",
+                "inqryEndDt": w_end.strftime("%Y%m%d") + "2359",
+            }
+            if keyword:
+                params["bidNtceNm"] = keyword
+            try:
+                data = self._get(url, params)
+                all_items.extend(self._items(data))
+            except Exception:
+                continue  # 구간 실패 시 건너뜀
+
+            if len(all_items) >= rows:
+                break
+
+        return self._parse_winner(all_items[:rows])
 
     def _parse_winner(self, items: list) -> pd.DataFrame:
         if not items:

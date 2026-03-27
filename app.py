@@ -55,10 +55,16 @@ def check_api_status() -> bool:
 # ── 사이드바 ──────────────────────────────────────────────────────────────
 st.sidebar.title("🏛️ 나라장터 낙찰 도우미")
 st.sidebar.markdown("---")
+
+# 다른 탭에서 이동 요청이 있으면 radio 렌더링 전에 미리 설정
+if "nav_to" in st.session_state:
+    st.session_state["page"] = st.session_state.pop("nav_to")
+
 page = st.sidebar.radio(
     "메뉴",
-    ["💰 낙찰 예상가 계산기", "🔍 입찰공고 검색", "📊 낙찰 통계 분석", "📁 내 입찰 기록"],
+    ["🔍 입찰공고 검색", "💰 낙찰 예상가 계산기", "📊 낙찰 통계 분析", "📁 내 입찰 기록"],
     label_visibility="collapsed",
+    key="page",
 )
 st.sidebar.markdown("---")
 
@@ -89,29 +95,24 @@ if page == "💰 낙찰 예상가 계산기":
     st.caption("기초금액 기반 복수예가 시뮬레이션 및 낙찰하한율 적용")
 
     # ── 공고번호 검색 ──────────────────────────────
-    with st.expander("🔎 공고번호로 자동 불러오기", expanded=True):
+    with st.expander("🔎 공고 자동 불러오기", expanded=True):
+        st.info("💡 **🔍 입찰공고 검색** 탭에서 공고를 찾은 뒤 **'이 공고로 계산기 적용'** 버튼을 누르면 자동으로 아래에 채워집니다.")
+
         c_no, c_btn = st.columns([3, 1])
         with c_no:
             bid_no_input = st.text_input(
-                "공고번호", placeholder="예: 20250123456-00",
+                "이전에 적용한 공고번호 재불러오기", placeholder="예: R26BK01409831",
                 label_visibility="collapsed",
             )
         with c_btn:
-            search_btn = st.button("불러오기", use_container_width=True, type="secondary")
+            search_btn = st.button("재불러오기", use_container_width=True, type="secondary")
 
         if search_btn and bid_no_input.strip():
-            with st.spinner("공고 조회 중..."):
-                bid_no_key = bid_no_input.strip()
-                info = cache_get_bid(bid_no_key)   # 1) DB 캐시 확인
-                if not info:
-                    try:
-                        info = api.get_bid_by_no(bid_no_key)  # 2) API 호출
-                        if info:
-                            cache_save_bid(bid_no_key, info)   # 결과 캐시 저장
-                    except Exception:
-                        pass
-                if not info:
-                    info = get_demo_bid_by_no(bid_no_key)
+            bid_no_key = bid_no_input.strip()
+            info = cache_get_bid(bid_no_key)
+            if not info:
+                st.warning("⚠️ 저장된 기록이 없습니다. 🔍 입찰공고 검색 탭에서 공고를 찾아 먼저 '계산기 적용'을 해주세요.")
+                st.stop()
 
             # 불러오는 즉시 계산기에 적용
             st.session_state["apply_bid"] = info
@@ -138,6 +139,7 @@ if page == "💰 낙찰 예상가 계산기":
 
     # 공고 자동 적용 값 읽기
     _apply = st.session_state.get("apply_bid", {})
+    _wkey = _apply.get("공고번호", "default")  # 공고 변경 시 위젯 재초기화용 key
 
     col_input, col_result = st.columns([1, 2], gap="large")
 
@@ -145,7 +147,7 @@ if page == "💰 낙찰 예상가 계산기":
         st.subheader("입력")
         TYPE_OPTIONS = ["용역", "물품", "공사"]
         _default_type_idx = TYPE_OPTIONS.index(_apply["공사종류"]) if _apply.get("공사종류") in TYPE_OPTIONS else 0
-        bid_type = st.selectbox("공사 종류", TYPE_OPTIONS, index=_default_type_idx)
+        bid_type = st.selectbox("공사 종류", TYPE_OPTIONS, index=_default_type_idx, key=f"bid_type_{_wkey}")
 
         # 낙찰하한율 — 공고 자동적용 또는 공사종류 기본값
         DEFAULT_RATES = {"용역": 88.0, "물품": 80.0, "공사": 87.745}
@@ -158,30 +160,33 @@ if page == "💰 낙찰 예상가 계산기":
             step=0.001,
             format="%.3f",
             help="공사 87.745% / 용역 88% / 물품 80% 기본값. 공고별로 다를 수 있으니 직접 수정하세요.",
+            key=f"lower_rate_{_wkey}",
         )
         if lower_rate_input != default_rate:
             st.caption(f"※ 기본값({default_rate}%)에서 변경됨")
 
         # 기초금액 — 공고 자동적용 또는 직접 입력
         _base_from_bid = int(_apply["기초금액"]) if _apply.get("기초금액") else None
-        input_method = st.radio("금액 입력 방식", ["직접 입력 (원)", "억원 단위"])
+        input_method = st.radio("금액 입력 방식", ["직접 입력 (원)", "억원 단위"], key=f"input_method_{_wkey}")
         if input_method == "직접 입력 (원)":
             base_price_input = st.number_input(
                 "기초금액 (원)", min_value=100000,
                 value=_base_from_bid if _base_from_bid else 100_000_000,
-                step=1_000_000, format="%d"
+                step=1_000_000, format="%d",
+                key=f"base_price_{_wkey}",
             )
         else:
             _default_eok = round(_base_from_bid / 1e8, 2) if _base_from_bid else 1.0
-            base_eok = st.number_input("기초금액 (억원)", min_value=0.01, value=_default_eok, step=0.1, format="%.2f")
+            base_eok = st.number_input("기초금액 (억원)", min_value=0.01, value=_default_eok, step=0.1, format="%.2f", key=f"base_eok_{_wkey}")
             base_price_input = int(base_eok * 1_0000_0000)
             st.info(f"= {base_price_input:,}원")
 
         st.markdown("---")
         competitor_count = st.number_input(
             "예상 경쟁사 수 (0=과거 데이터 자동 추정)",
-            min_value=0, max_value=100, value=0, step=1,
+            min_value=0, max_value=1000, value=0, step=1,
             help="0이면 같은 기관·유사금액 과거 입찰의 참가업체수 중앙값을 자동 사용합니다.",
+            key=f"competitor_count_{_wkey}",
         )
         if "last_result" in st.session_state:
             _ec = st.session_state["last_result"].get("estimated_comp")
@@ -215,9 +220,13 @@ if page == "💰 낙찰 예상가 계산기":
 
                     winner_df = pd.DataFrame()
                     try:
+                        _w_start = (datetime.now() - timedelta(days=180)).strftime("%Y%m%d") + "000000"
+                        _w_end   = datetime.now().strftime("%Y%m%d") + "235959"
                         winner_df = api.get_winner_list(
                             bid_type=bid_type,
                             keyword=keyword,
+                            start_date=_w_start,
+                            end_date=_w_end,
                             rows=500,
                         )
                     except Exception:
@@ -502,33 +511,71 @@ elif page == "🔍 입찰공고 검색":
         with col5:
             end_dt = st.date_input("조회 종료일", value=datetime.now())
 
+        st.caption("※ API 제한: 최대 14일 범위까지 조회 가능")
         submitted = st.form_submit_button("🔍 검색", use_container_width=True, type="primary")
 
+    # 검색 실행 → 결과 session_state에 저장 (버튼 클릭 후에도 유지)
     if submitted:
+        days_diff = (end_dt - start_dt).days
+        if days_diff > 14:
+            st.warning(f"⚠️ 조회 기간이 {days_diff}일입니다. API 제한(14일)을 초과하면 결과가 없을 수 있습니다.")
         start_str = start_dt.strftime("%Y%m%d") + "000000"
         end_str = end_dt.strftime("%Y%m%d") + "235959"
-        is_demo = False
         with st.spinner("공고 조회 중..."):
             try:
                 df = api.get_bid_list(
-                    bid_type=bid_type,
-                    keyword=keyword,
-                    start_date=start_str,
-                    end_date=end_str,
-                    rows=rows,
+                    bid_type=bid_type, keyword=keyword,
+                    start_date=start_str, end_date=end_str, rows=rows,
                 )
-                if df.empty:
+                is_demo = df.empty
+                if is_demo:
                     df = get_demo_bid_list(bid_type=bid_type, rows=rows)
-                    is_demo = True
-            except Exception:
+            except Exception as e:
+                st.error(f"API 오류: {e}")
                 df = get_demo_bid_list(bid_type=bid_type, rows=rows)
                 is_demo = True
+        st.session_state["bid_search_result"] = {"df": df, "is_demo": is_demo, "bid_type": bid_type}
+
+    # 결과 표시 (검색 후 버튼 클릭해도 유지)
+    if "bid_search_result" in st.session_state:
+        _sr = st.session_state["bid_search_result"]
+        df, is_demo, _stype = _sr["df"], _sr["is_demo"], _sr["bid_type"]
 
         if is_demo:
-            st.info("⚠️ API 미연결 상태 — 데모 데이터를 표시합니다. data.go.kr에서 API 승인을 확인하세요.")
+            st.info("⚠️ API 미연결 상태 — 데모 데이터입니다.")
         else:
             st.success(f"총 {len(df)}건 조회됨")
 
+        # 공고 선택 → 계산기 연동
+        st.markdown("**공고를 선택해 계산기에 바로 적용하세요**")
+        bid_names = df.apply(
+            lambda r: f"{r.get('공고번호','?')} | {str(r.get('공고명',''))[:40]}", axis=1
+        ).tolist()
+        selected_idx = st.selectbox("공고 선택", range(len(bid_names)),
+                                    format_func=lambda i: bid_names[i],
+                                    label_visibility="collapsed")
+        if st.button("📊 이 공고로 계산기 적용", type="primary"):
+            row = df.iloc[selected_idx]
+            bid_no = str(row.get("공고번호", ""))
+            base = float(row.get("추정금액") or 0) * 1.1 if row.get("추정금액") else None
+            info = {
+                "공고번호":  bid_no,
+                "공고명":   str(row.get("공고명", "")),
+                "공고기관": str(row.get("공고기관", "")),
+                "기초금액": base,
+                "낙찰하한율": float(row.get("낙찰하한율") or 0) or None,
+                "계약방식": str(row.get("계약방식", "")),
+                "개찰일시": str(row.get("개찰일시", "")),
+                "공사종류": _stype,
+                "후보수": 15, "추첨수": 2,
+            }
+            cache_save_bid(bid_no, info)
+            st.session_state["apply_bid"] = info
+            st.session_state["loaded_bid"] = info
+            st.session_state["nav_to"] = "💰 낙찰 예상가 계산기"
+            st.rerun()
+
+        st.markdown("---")
         display_df = df.copy()
         if "추정금액" in display_df.columns:
             display_df["추정금액(표시)"] = display_df["추정금액"].apply(
@@ -562,10 +609,11 @@ elif page == "📊 낙찰 통계 분석":
 
         col4, col5 = st.columns(2)
         with col4:
-            start_dt = st.date_input("조회 시작일", value=datetime.now() - timedelta(days=90))
+            start_dt = st.date_input("조회 시작일", value=datetime.now() - timedelta(days=180))
         with col5:
             end_dt = st.date_input("조회 종료일", value=datetime.now())
 
+        st.caption("※ 기간이 길수록 통계 정확도 향상 (14일씩 자동 분할 조회)")
         submitted = st.form_submit_button("📊 분석하기", use_container_width=True, type="primary")
 
     if submitted:
@@ -584,7 +632,8 @@ elif page == "📊 낙찰 통계 분석":
                 if df.empty:
                     df = get_demo_winner_list(bid_type=bid_type, rows=rows)
                     is_demo = True
-            except Exception:
+            except Exception as e:
+                st.error(f"API 오류: {e}")
                 df = get_demo_winner_list(bid_type=bid_type, rows=rows)
                 is_demo = True
 
