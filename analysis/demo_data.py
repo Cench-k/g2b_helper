@@ -104,7 +104,7 @@ def get_demo_winner_list(bid_type: str = "용역", rows: int = 100) -> pd.DataFr
     now = datetime.now()
     records = []
     for i, rate in enumerate(rates):
-        base = np.random.randint(50_000_000, 3_000_000_000)
+        base = np.random.randint(50_000_000, 3_000_000_000, dtype=np.int64)
         estimated_price = base * np.random.uniform(0.98, 1.03)
         award_amount = estimated_price * (rate / 100)
         open_date = now - timedelta(days=np.random.randint(1, 90))
