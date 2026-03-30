@@ -737,7 +737,7 @@ border-radius:8px;padding:14px 18px;margin-top:8px;">
             # ── 1원 단위 정밀 검증기 ─────────────────────────────────────
             st.markdown("---")
             st.subheader("🎯 1원 단위 투찰가 정밀 튜닝")
-            st.caption("최적 투찰가를 기준으로 1원 단위로 조정하며 유효 확률을 확인하세요.")
+            st.caption("유효 확률 1% 단위 구간으로 바로 이동하거나, 1원 단위로 직접 조정하세요.")
 
             _av   = r.get("a_value", 0.0)
             _lr   = r["lower_rate_pct"] / 100
@@ -751,14 +751,67 @@ border-radius:8px;padding:14px 18px;margin-top:8px;">
                 survived = int(((price >= _floors) & (price <= _dist)).sum())
                 return survived, survived / len(_dist) * 100
 
+            # 유효 확률 1% 단위 구간별 대표 금액 미리 계산
+            # 각 1% 구간에서 해당 확률 이상이 되는 가장 낮은 금액 탐색
+            @st.cache_data(show_spinner=False)
+            def _build_prob_table(floors_key: str, dist_key: str, search_low: int, search_high: int):
+                prob_to_price = {}
+                for pct in range(0, 101):
+                    target = pct / 100
+                    # 이진 탐색: 유효확률 >= pct% 가 되는 최솟값
+                    lo, hi = search_low, search_high
+                    found = None
+                    while lo <= hi:
+                        mid = (lo + hi) // 2
+                        s = int(((mid >= _floors) & (mid <= _dist)).sum())
+                        if s / len(_dist) >= target:
+                            found = mid
+                            hi = mid - 1
+                        else:
+                            lo = mid + 1
+                    prob_to_price[pct] = found
+                return prob_to_price
+
+            _search_low  = int(_floors.min()) - 100
+            _search_high = int(_dist.max()) + 100
+            _prob_table  = _build_prob_table(
+                str(int(_floors.sum())), str(int(_dist.sum())),
+                _search_low, _search_high
+            )
+
+            # 세션 상태로 투찰가 관리
+            if f"micro_val_{_wkey}" not in st.session_state:
+                st.session_state[f"micro_val_{_wkey}"] = int(optimal["optimal_bid"])
+
+            # 유효 확률 1% 단위 점프 버튼
+            _cur_prob = _calc_prob(st.session_state[f"micro_val_{_wkey}"])[1]
+            _cur_pct  = int(_cur_prob)
+
+            st.markdown("**유효 확률 구간 바로 이동**")
+            _jump_cols = st.columns(10)
+            _jump_targets = [100, 99, 98, 97, 95, 90, 85, 80, 70, 60]
+            for i, pct in enumerate(_jump_targets):
+                _price_at = _prob_table.get(pct)
+                _label = f"{pct}%"
+                if _price_at is not None:
+                    if _jump_cols[i].button(_label, key=f"jump_{pct}_{_wkey}", use_container_width=True):
+                        st.session_state[f"micro_val_{_wkey}"] = _price_at
+                        st.rerun()
+                else:
+                    _jump_cols[i].button(_label, disabled=True, key=f"jump_{pct}_{_wkey}", use_container_width=True)
+
             c_micro1, c_micro2 = st.columns([1, 2])
             with c_micro1:
                 micro_price = st.number_input(
                     "최종 투찰가 입력 (원)",
-                    value=int(optimal["optimal_bid"]),
+                    value=st.session_state[f"micro_val_{_wkey}"],
                     step=1, format="%d",
                     key=f"micro_{_wkey}",
                 )
+                # number_input 직접 수정 시 세션 동기화
+                if micro_price != st.session_state[f"micro_val_{_wkey}"]:
+                    st.session_state[f"micro_val_{_wkey}"] = micro_price
+
                 survived, win_rate = _calc_prob(micro_price)
                 st.metric("유효 확률", f"{win_rate:.2f}%", f"{survived:,} / {len(_dist):,}회")
 
