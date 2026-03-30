@@ -68,13 +68,13 @@ def guess_price_range_label(agency: str) -> str:
         return "직접 입력 (방위사업청·군 시설 등)"
     return "국가기관·조달청 (-2% ~ +2%)"
 
-def check_api_status() -> bool:
-    """API 연결 상태 확인"""
+def check_api_status() -> tuple[bool, str]:
+    """API 연결 상태 확인. (성공여부, 에러메시지) 반환"""
     try:
         df = api.get_bid_list(bid_type="용역", rows=1)
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 # ── 사이드바 ──────────────────────────────────────────────────────────────
 st.sidebar.title("🏛️ 나라장터 낙찰 도우미")
@@ -96,15 +96,23 @@ st.sidebar.markdown("---")
 if "api_ok" not in st.session_state:
     with st.sidebar:
         with st.spinner("API 연결 확인 중..."):
-            st.session_state["api_ok"] = check_api_status()
+            ok, err = check_api_status()
+            st.session_state["api_ok"] = ok
+            st.session_state["api_err"] = err
 
 if st.session_state.get("api_ok"):
     st.sidebar.success("✅ API 연결됨")
 else:
     st.sidebar.warning("⚠️ API 미연결 (데모 모드)")
-    st.sidebar.caption("data.go.kr 마이페이지에서\nAPI 승인 상태를 확인하세요.")
+    _err = st.session_state.get("api_err", "")
+    if _err:
+        st.sidebar.caption(f"오류: {_err}")
+    else:
+        st.sidebar.caption("data.go.kr 마이페이지에서\nAPI 승인 상태를 확인하세요.")
     if st.sidebar.button("🔄 API 재연결"):
-        st.session_state["api_ok"] = check_api_status()
+        ok, err = check_api_status()
+        st.session_state["api_ok"] = ok
+        st.session_state["api_err"] = err
         st.rerun()
 
 st.sidebar.markdown("---")
