@@ -4,4 +4,5 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 screenshot*.png
+sc_*.png
 *.log

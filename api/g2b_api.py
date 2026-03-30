@@ -201,7 +201,7 @@ class G2BAPI:
                     or num(item.get("bdgtAmt")))
         # 복수예가 후보 수 / 추첨 수 (공고마다 다를 수 있음, 기본 15개/2개)
         total_prd = int(item.get("totPrdprcNum") or 15)
-        draw_prd  = int(item.get("drwtPrdprcNum") or 2)
+        draw_prd  = int(item.get("drwtPrdprcNum") or 4)
         return {
             "공고번호":   item.get("bidNtceNo", ""),
             "공고명":    item.get("bidNtceNm", ""),
@@ -293,6 +293,10 @@ class G2BAPI:
             try: presmpt = float(item.get("presmptPrce") or 0) or None
             except: presmpt = None
 
+            # 기초금액: bssAmt → 사정률 계산에 사용
+            try: bss_amt = float(item.get("bssAmt") or 0) or None
+            except: bss_amt = None
+
             rows.append({
                 "공고번호":   item.get("bidNtceNo", ""),
                 "공고명":    item.get("bidNtceNm", ""),
@@ -303,11 +307,16 @@ class G2BAPI:
                 "낙찰업체명": corp_name,
                 "낙찰금액":  award_amt,
                 "예정가격":  presmpt,
+                "기초금액":  bss_amt,
                 "진행상태":  item.get("progrsDivCdNm", ""),
             })
         df = pd.DataFrame(rows)
         df["낙찰금액"] = pd.to_numeric(df["낙찰금액"], errors="coerce")
         df["예정가격"] = pd.to_numeric(df["예정가격"], errors="coerce")
+        df["기초금액"] = pd.to_numeric(df["기초금액"], errors="coerce")
         mask = df["예정가격"].notna() & (df["예정가격"] > 0) & df["낙찰금액"].notna()
         df.loc[mask, "낙찰률"] = (df.loc[mask, "낙찰금액"] / df.loc[mask, "예정가격"] * 100).round(3)
+        # 사정률 = 낙찰금액 / 기초금액 × 100 (발주처별 낙찰 경향 분석용)
+        mask2 = df["기초금액"].notna() & (df["기초금액"] > 0) & df["낙찰금액"].notna()
+        df.loc[mask2, "사정률"] = (df.loc[mask2, "낙찰금액"] / df.loc[mask2, "기초금액"] * 100).round(3)
         return df

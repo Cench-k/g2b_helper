@@ -44,6 +44,30 @@ st.markdown("""
 
 api = G2BAPI()
 
+# 발주처별 예비가격 범위 라벨 (UI selectbox 키와 동일해야 함)
+PRICE_RANGE_OPTIONS = {
+    "국가기관·조달청 (-2% ~ +2%)":            (-2.0, 2.0),
+    "지자체·교육청 (-3% ~ +3%)":              (-3.0, 3.0),
+    "수자원공사·철도공단·가스공사 (-2.5% ~ +2.5%)": (-2.5, 2.5),
+    "공기업 LH·도로공사·한전 등 (-2% ~ +2%)": (-2.0, 2.0),
+    "직접 입력 (방위사업청·군 시설 등)":        None,
+}
+
+def guess_price_range_label(agency: str) -> str:
+    """공고기관명 기반 예비가격 범위 라벨 추정"""
+    a = agency or ""
+    if any(k in a for k in ["교육청", "시청", "군청", "구청", "도청",
+                              "특별시", "광역시", "특별자치시", "특별자치도",
+                              "시의회", "군의회", "구의회", "도의회"]):
+        return "지자체·교육청 (-3% ~ +3%)"
+    if any(k in a for k in ["수자원공사", "국가철도공단", "한국가스공사", "K-water"]):
+        return "수자원공사·철도공단·가스공사 (-2.5% ~ +2.5%)"
+    if any(k in a for k in ["LH", "토지주택", "도로공사", "한국전력", "한전"]):
+        return "공기업 LH·도로공사·한전 등 (-2% ~ +2%)"
+    if any(k in a for k in ["방위사업청", "국방부", "육군", "해군", "공군", "국군", "병무청"]):
+        return "직접 입력 (방위사업청·군 시설 등)"
+    return "국가기관·조달청 (-2% ~ +2%)"
+
 def check_api_status() -> bool:
     """API 연결 상태 확인"""
     try:
@@ -224,6 +248,67 @@ if page == "💰 낙찰 예상가 계산기":
             st.info(f"= {base_price_input:,}원")
 
         st.markdown("---")
+
+        # A값 (순공사원가) — 해당 공고에 적용되는 경우에만 입력
+        a_value_input = st.number_input(
+            "A값 (순공사원가 등, 원) — 해당 없으면 0",
+            min_value=0, value=0, step=1_000_000, format="%d",
+            help="A값 적용 공고는 낙찰하한금액 산식이 달라집니다.\n"
+                 "적용 산식: (예정가격 - A값) × 낙찰하한율 + A값\n"
+                 "공고문에 순공사원가·국민연금·건강보험료·퇴직공제부금비 합산액 명시 시 입력하세요.",
+            key=f"a_value_{_wkey}",
+        )
+        if a_value_input > 0:
+            st.caption(f"A값 적용: 낙찰하한금액 = (예정가 - {format_won(a_value_input)}) × {lower_rate_input}% + {format_won(a_value_input)}")
+
+        # 예비가격 범위 — 발주처 유형별 선택 (공고 불러오면 자동 설정)
+        _range_labels = list(PRICE_RANGE_OPTIONS.keys())
+        _auto_label = _apply.get("예가범위_라벨", _range_labels[0])
+        _default_range_idx = _range_labels.index(_auto_label) if _auto_label in _range_labels else 0
+        price_range_label = st.selectbox(
+            "예비가격 범위 (발주처 유형)",
+            options=_range_labels,
+            index=_default_range_idx,
+            help="공고문에서 발주처를 확인 후 선택하세요.\n"
+                 "공고번호로 불러오면 기관명 기반으로 자동 설정됩니다.\n"
+                 "방위사업청·군 시설공사는 공고마다 범위가 다르므로 직접 입력하세요.",
+            key=f"price_range_{_wkey}",
+        )
+        if _apply.get("예가범위_라벨") and _apply["예가범위_라벨"] != "직접 입력 (방위사업청·군 시설 등)":
+            st.caption(f"공고기관 '{_apply.get('공고기관', '')}' 기반 자동 설정됨")
+        if PRICE_RANGE_OPTIONS[price_range_label] is None:
+            _pr_col1, _pr_col2 = st.columns(2)
+            _pr_min = _pr_col1.number_input("최소 (%)", value=-2.0, min_value=-10.0, max_value=0.0, step=0.5, key=f"pr_min_{_wkey}")
+            _pr_max = _pr_col2.number_input("최대 (%)", value=2.0, min_value=0.0, max_value=10.0, step=0.5, key=f"pr_max_{_wkey}")
+            price_range_input = (_pr_min, _pr_max)
+        else:
+            price_range_input = PRICE_RANGE_OPTIONS[price_range_label]
+
+        # 복수예가 추첨수 — 공고에서 자동 적용, 직접 변경 가능
+        _draw_from_bid = int(_apply.get("추첨수") or 4)
+        DRAW_OPTIONS = [2, 3, 4, 5]
+        _draw_default_idx = DRAW_OPTIONS.index(_draw_from_bid) if _draw_from_bid in DRAW_OPTIONS else 2
+        draw_count_input = st.selectbox(
+            "복수예가 추첨수",
+            options=DRAW_OPTIONS,
+            index=_draw_default_idx,
+            help="나라장터 표준: 15개 후보 중 4개 추첨. 공고에 따라 다를 수 있습니다.\n"
+                 "공고번호로 불러오면 공고의 실제 추첨수가 자동 적용됩니다.",
+            key=f"draw_count_{_wkey}",
+        )
+        if _apply.get("추첨수"):
+            st.caption(f"공고 고지 추첨수: {_apply['추첨수']}개 자동 적용됨")
+
+        use_psych_weight = st.checkbox(
+            "심리 가중치 반영",
+            value=False,
+            help="입찰자들은 예비가격 번호를 고를 때 중간(7~9번)을 선호하는 경향이 있습니다.\n"
+                 "이 옵션을 켜면 중간 번호 후보가 추첨될 확률을 높여 시뮬레이션합니다.\n"
+                 "15개 후보 표준 방식에만 적용됩니다.",
+            key=f"psych_{_wkey}",
+        )
+
+        st.markdown("---")
         competitor_count = st.number_input(
             "예상 경쟁사 수 (0=과거 데이터 자동 추정)",
             min_value=0, max_value=1000, value=0, step=1,
@@ -238,7 +323,9 @@ if page == "💰 낙찰 예상가 계산기":
         calc_btn = st.button("📊 계산하기", use_container_width=True, type="primary")
 
         st.markdown("---")
-        st.caption("※ 복수예가: 기초금액의 -2%~+3% 범위\n15개 후보 중 2개 추첨 후 평균 = 예정가격\n※ 10,000회 몬테카를로 시뮬레이션")
+        _pr = price_range_input
+        st.caption(f"※ 예비가격 범위: {_pr[0]:+g}% ~ {_pr[1]:+g}% | 추첨 {draw_count_input}개 평균(버림) = 예정가격\n"
+                   "※ 매 시뮬레이션마다 후보 난수 재생성 | 10,000회 몬테카를로")
 
     with col_result:
         if calc_btn or "last_result" in st.session_state:
@@ -246,12 +333,14 @@ if page == "💰 낙찰 예상가 계산기":
                 with st.spinner("시뮬레이션 + 과거 낙찰 데이터 조회 중..."):
                     _loaded_bid = st.session_state.get("apply_bid", {})
                     _cand = int(_loaded_bid.get("후보수") or 15)
-                    _draw = int(_loaded_bid.get("추첨수") or 2)
                     result = calc_bid_range(
                         base_price_input, bid_type,
                         custom_lower_rate=lower_rate_input,
                         candidate_count=_cand,
-                        draw_count=_draw,
+                        draw_count=draw_count_input,
+                        a_value=float(a_value_input),
+                        price_range=price_range_input,
+                        use_psychology_weight=use_psych_weight,
                     )
 
                     # 공고번호 로드된 경우 → 기관·계약방식·키워드 추출
@@ -289,7 +378,7 @@ if page == "💰 낙찰 예상가 계산기":
                     result["stats_is_demo"]   = is_demo
                     result["stats_keyword"]   = keyword
                     result["stats_filter_desc"] = filter_desc
-                    result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"])
+                    result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"], base_price=base_price_input)
                     # 과거 데이터 기반 경쟁사 수 추정
                     result["estimated_comp"] = estimate_competitor_count(winner_df)
                 st.session_state["last_result"] = result
@@ -426,6 +515,21 @@ border-radius:8px;padding:16px 20px;margin-bottom:12px;">
                 sc3.metric("표준편차",      f"{stats['std_rate']:.3f}%p")
                 sc4.metric("25~75% 구간",  f"{stats['rate_p25']:.2f}~{stats['rate_p75']:.2f}%")
 
+                # 사정률 분석 (기초금액 기반 낙찰 경향)
+                if stats.get("sajeong_mean"):
+                    st.markdown(f"""
+<div style="background:#f8f9fa;border-left:5px solid #8e44ad;
+border-radius:8px;padding:14px 18px;margin-top:8px;">
+  <div style="font-size:13px;color:#666;margin-bottom:4px">
+    📏 사정률 분석 — 기초금액 대비 낙찰금액 비율 (발주처별 낙찰 경향)
+  </div>
+  <div style="font-size:20px;font-weight:700;color:#8e44ad">
+    중앙값 {stats['sajeong_median']:.3f}% &nbsp;|&nbsp; 평균 {stats['sajeong_mean']:.3f}%
+    &nbsp;|&nbsp; 25~75% 구간 {stats['sajeong_p25']:.2f}~{stats['sajeong_p75']:.2f}%
+  </div>
+  {"<div style='font-size:13px;color:#666;margin-top:4px'>→ 이 발주처 유사 공고 투찰가 추천: <b>" + format_won_exact(int(stats['sajeong_recommend'])) + "</b> (기초금액 × " + str(stats['sajeong_median']) + "%)</div>" if stats.get('sajeong_recommend') else ""}
+</div>""", unsafe_allow_html=True)
+
             # ── 통합 시각화 차트 ─────────────────────────────────────────
             tab_chart1, tab_chart2 = st.tabs(["투찰가별 유효 확률", "예정가격 분포"])
 
@@ -530,6 +634,61 @@ border-radius:8px;padding:16px 20px;margin-bottom:12px;">
                     detail_df[["구분", "금액(표시)", "금액(원)", "사정률(%)"]],
                     use_container_width=True, hide_index=True,
                 )
+
+            # ── 1원 단위 정밀 검증기 ─────────────────────────────────────
+            st.markdown("---")
+            st.subheader("🎯 1원 단위 투찰가 정밀 튜닝")
+            st.caption("최적 투찰가를 기준으로 1원 단위로 조정하며 유효 확률을 확인하세요.")
+
+            _av   = r.get("a_value", 0.0)
+            _lr   = r["lower_rate_pct"] / 100
+            _dist = np.array(r["distribution"])
+            if _av > 0:
+                _floors = np.ceil(np.round((_dist - _av) * _lr + _av, 5))
+            else:
+                _floors = np.ceil(np.round(_dist * _lr, 5))
+
+            def _calc_prob(price: int) -> tuple:
+                survived = int(((price >= _floors) & (price <= _dist)).sum())
+                return survived, survived / len(_dist) * 100
+
+            c_micro1, c_micro2 = st.columns([1, 2])
+            with c_micro1:
+                micro_price = st.number_input(
+                    "최종 투찰가 입력 (원)",
+                    value=int(optimal["optimal_bid"]),
+                    step=1, format="%d",
+                    key=f"micro_{_wkey}",
+                )
+                survived, win_rate = _calc_prob(micro_price)
+                st.metric("유효 확률", f"{win_rate:.2f}%", f"{survived:,} / {len(_dist):,}회")
+
+            with c_micro2:
+                if win_rate == 100.0:
+                    st.success(f"**{micro_price:,}원** — 어떤 예정가격이 나와도 **100% 무효 없음** (절대 안전)")
+                elif win_rate >= 80:
+                    st.info(f"**{micro_price:,}원** — {survived:,} / {len(_dist):,}회 유효 ({win_rate:.2f}%)")
+                elif win_rate >= 50:
+                    st.warning(f"**{micro_price:,}원** — {survived:,} / {len(_dist):,}회 유효 ({win_rate:.2f}%) ⚠️ 약간 위험")
+                else:
+                    st.error(f"**{micro_price:,}원** — {survived:,} / {len(_dist):,}회만 유효 ({win_rate:.2f}%) 🚨 하한 미달 위험 높음")
+
+                # ±5원 인근 확률 미니 테이블
+                _micro_rows = []
+                for delta in range(-5, 6):
+                    p = micro_price + delta
+                    s, prob = _calc_prob(p)
+                    _micro_rows.append({
+                        "투찰가": f"{p:,}원",
+                        "유효 횟수": f"{s:,}",
+                        "유효 확률": f"{prob:.2f}%",
+                        "비고": "◀ 현재 입력" if delta == 0 else "",
+                    })
+                st.dataframe(
+                    pd.DataFrame(_micro_rows),
+                    use_container_width=True, hide_index=True,
+                )
+
         else:
             st.info("왼쪽에서 기초금액을 입력하고 '계산하기' 버튼을 누르세요.")
 
@@ -603,16 +762,18 @@ elif page == "🔍 입찰공고 검색":
             row = df.iloc[selected_idx]
             bid_no = str(row.get("공고번호", ""))
             base = float(row.get("추정금액") or 0) * 1.1 if row.get("추정금액") else None
+            _agency = str(row.get("공고기관", ""))
             info = {
                 "공고번호":  bid_no,
                 "공고명":   str(row.get("공고명", "")),
-                "공고기관": str(row.get("공고기관", "")),
+                "공고기관": _agency,
                 "기초금액": base,
                 "낙찰하한율": float(row.get("낙찰하한율") or 0) or None,
                 "계약방식": str(row.get("계약방식", "")),
                 "개찰일시": str(row.get("개찰일시", "")),
                 "공사종류": _stype,
-                "후보수": 15, "추첨수": 2,
+                "후보수": 15, "추첨수": 4,
+                "예가범위_라벨": guess_price_range_label(_agency),
             }
             cache_save_bid(bid_no, info)
             st.session_state["apply_bid"] = info
@@ -677,8 +838,22 @@ elif page == "📊 낙찰 통계 분석":
                 if df.empty:
                     df = get_demo_winner_list(bid_type=bid_type, rows=rows)
                     is_demo = True
+            except ConnectionError as e:
+                msg = str(e)
+                if "한도 초과" in msg or "429" in msg:
+                    st.warning("⚠️ API 일일 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요.")
+                elif "응답 시간 초과" in msg or "Timeout" in msg:
+                    st.warning("⚠️ API 응답 시간이 초과됐습니다. 네트워크 상태를 확인하거나 잠시 후 재시도하세요.")
+                elif "500" in msg or "서버" in msg:
+                    st.warning("⚠️ 조달청 API 서버 오류입니다. 잠시 후 다시 시도하세요.")
+                elif "승인" in msg or "인증" in msg or "401" in msg or "403" in msg:
+                    st.warning("⚠️ API 키 인증 오류입니다. data.go.kr에서 API 승인 상태를 확인하세요.")
+                else:
+                    st.warning(f"⚠️ API 연결 실패: {msg}")
+                df = get_demo_winner_list(bid_type=bid_type, rows=rows)
+                is_demo = True
             except Exception as e:
-                st.error(f"API 오류: {e}")
+                st.error(f"예상치 못한 오류: {e}")
                 df = get_demo_winner_list(bid_type=bid_type, rows=rows)
                 is_demo = True
 
@@ -701,7 +876,15 @@ elif page == "📊 낙찰 통계 분석":
                 with c4:
                     st.metric("낙찰률 최댓값", f"{rates.max():.3f}%")
 
-            tab1, tab2, tab3 = st.tabs(["낙찰률 분포", "낙찰금액 분포", "원본 데이터"])
+            # 사정률 요약 (기초금액 있을 때)
+            if "사정률" in df.columns and not df["사정률"].dropna().empty:
+                sj = df["사정률"].dropna()
+                with c1:
+                    st.metric("사정률 평균", f"{sj.mean():.3f}%", help="낙찰금액/기초금액 × 100")
+                with c2:
+                    st.metric("사정률 중앙값", f"{sj.median():.3f}%")
+
+            tab1, tab2, tab3, tab4 = st.tabs(["낙찰률 분포", "사정률 분포", "낙찰금액 분포", "원본 데이터"])
 
             with tab1:
                 if "낙찰률" in df.columns and not df["낙찰률"].dropna().empty:
@@ -732,6 +915,43 @@ elif page == "📊 낙찰 통계 분석":
                     st.info("낙찰률 데이터가 없습니다.")
 
             with tab2:
+                if "사정률" in df.columns and not df["사정률"].dropna().empty:
+                    sj_df = df.dropna(subset=["사정률"])
+                    sj_df = sj_df[(sj_df["사정률"] > 50) & (sj_df["사정률"] <= 110)]
+                    if not sj_df.empty:
+                        fig_sj = px.histogram(
+                            sj_df,
+                            x="사정률",
+                            nbins=40,
+                            title="사정률 분포 (낙찰금액 / 기초금액 × 100%)",
+                            labels={"사정률": "사정률 (%)"},
+                            color_discrete_sequence=["#8e44ad"],
+                        )
+                        fig_sj.add_vline(
+                            x=sj_df["사정률"].mean(),
+                            line_dash="dash", line_color="red",
+                            annotation_text=f"평균 {sj_df['사정률'].mean():.3f}%",
+                        )
+                        fig_sj.add_vline(
+                            x=float(sj_df["사정률"].median()),
+                            line_dash="dot", line_color="#8e44ad",
+                            annotation_text=f"중앙값 {sj_df['사정률'].median():.3f}%",
+                        )
+                        fig_sj.update_layout(height=400, margin=dict(t=40, b=0))
+                        st.plotly_chart(fig_sj, use_container_width=True)
+                        st.caption("사정률 = 낙찰금액 ÷ 기초금액 × 100. 이 발주처에서 기초금액의 몇 %로 투찰해야 낙찰되는지 보여줍니다.")
+
+                        bins_sj = pd.cut(sj_df["사정률"], bins=10)
+                        freq_sj = bins_sj.value_counts().sort_index().reset_index()
+                        freq_sj.columns = ["사정률 구간", "건수"]
+                        freq_sj["비율(%)"] = (freq_sj["건수"] / freq_sj["건수"].sum() * 100).round(1)
+                        st.dataframe(freq_sj, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("유효한 사정률 데이터가 없습니다.")
+                else:
+                    st.info("기초금액 데이터가 없어 사정률을 계산할 수 없습니다. (API에서 bssAmt 필드 미제공)")
+
+            with tab3:
                 if "낙찰금액" in df.columns and not df["낙찰금액"].dropna().empty:
                     df_valid = df.dropna(subset=["낙찰금액"])
                     df_valid = df_valid[df_valid["낙찰금액"] > 0]
@@ -748,9 +968,9 @@ elif page == "📊 낙찰 통계 분석":
                 else:
                     st.info("낙찰금액 데이터가 없습니다.")
 
-            with tab3:
+            with tab4:
                 display_df = df.copy()
-                for col in ["낙찰금액", "추정금액", "예정가격"]:
+                for col in ["낙찰금액", "기초금액", "예정가격"]:
                     if col in display_df.columns:
                         display_df[col] = display_df[col].apply(
                             lambda x: format_won(x) if pd.notna(x) and x > 0 else "-"
@@ -854,11 +1074,22 @@ elif page == "📁 내 입찰 기록":
 
             # 삭제
             with st.expander("🗑️ 기록 삭제"):
-                del_id = st.number_input("삭제할 기록 ID", min_value=1, step=1)
-                if st.button("삭제", type="secondary"):
-                    if delete_bid_record(int(del_id)):
-                        st.success("삭제됐습니다.")
-                        st.rerun()
+                _del_options = {
+                    row.get("id"): f"[{row.get('open_date','')}] {row.get('bid_name','(공고명 없음)')}"
+                    for row in records if row.get("id")
+                }
+                if _del_options:
+                    _del_id = st.selectbox(
+                        "삭제할 기록 선택",
+                        options=list(_del_options.keys()),
+                        format_func=lambda i: _del_options[i],
+                    )
+                    if st.button("삭제", type="secondary"):
+                        if delete_bid_record(int(_del_id)):
+                            st.success("삭제됐습니다.")
+                            st.rerun()
+                else:
+                    st.info("삭제할 기록이 없습니다.")
 
             # CSV 다운로드
             csv = df_my.to_csv(index=False, encoding="utf-8-sig")

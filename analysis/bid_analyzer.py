@@ -1,33 +1,58 @@
+import math
 import numpy as np
 import pandas as pd
 from config import AWARD_LOWER_RATE, MULTIPLE_PRICE_RANGE
 
-
-def calc_multiple_prices(base_price: float, count: int = 15) -> list[float]:
-    """복수예가 후보값 15개 생성 (기초금액 ±2~3% 범위)"""
-    low = base_price * (1 + MULTIPLE_PRICE_RANGE["min"] / 100)
-    high = base_price * (1 + MULTIPLE_PRICE_RANGE["max"] / 100)
-    return [round(low + (high - low) * i / (count - 1)) for i in range(count)]
+# 심리 가중치: 입찰자들은 중간 번호(7~9번)를 선호하고 끝 번호를 회피하는 경향
+# → 각 위치(1~15번)가 추첨 풀에 뽑힐 상대적 확률
+_PSYCH_WEIGHTS_15 = np.array([
+    2, 3, 4, 5, 7, 8, 12, 13, 11, 9, 8, 6, 5, 4, 3
+], dtype=float)
+_PSYCH_WEIGHTS_15 /= _PSYCH_WEIGHTS_15.sum()
 
 
 def simulate_expected_price(
     base_price: float,
     simulations: int = 10000,
     candidate_count: int = 15,
-    draw_count: int = 2,
+    draw_count: int = 4,
+    price_range: tuple = (-2.0, 3.0),
+    use_psychology_weight: bool = False,
 ) -> dict:
     """
     몬테카를로 시뮬레이션으로 예정가격 분포 계산
-    나라장터 복수예가: candidate_count개 후보 중 draw_count개 추첨 후 평균 = 예정가격
-    (공고마다 다름: totPrdprcNum / drwtPrdprcNum 으로 결정)
+    - 매 시뮬레이션마다 candidate_count개 예비가격을 구간 내 난수로 새로 생성
+      (선형 등간격 아닌 진짜 랜덤 → 실제 나라장터 동작과 동일)
+    - draw_count개 무작위 추첨 후 평균 floor = 예정가격
+    price_range: (min%, max%) — 조달청 (-2, 3) / 지자체 (-3, 3)
+    use_psychology_weight: 입찰자들의 번호 선호 편향 반영
+      (사람들은 중간 번호 7~9번 선호, 끝 번호 회피 → 중간 후보가 뽑힐 확률 상승)
     """
-    candidates = calc_multiple_prices(base_price, count=candidate_count)
-    draw = min(draw_count, len(candidates))
+    low  = base_price * (1 + price_range[0] / 100)
+    high = base_price * (1 + price_range[1] / 100)
+    draw = min(draw_count, candidate_count)
     results = []
-    rng = np.random.default_rng(42)
+    interval = (high - low) / candidate_count  # 구간 폭
+    rng = np.random.default_rng()  # 매 실행마다 진짜 랜덤 (시드 고정 해제)
+
+    # 심리 가중치 설정 (15개 표준 후보에만 적용)
+    if use_psychology_weight and candidate_count == 15:
+        _weights = _PSYCH_WEIGHTS_15
+    else:
+        _weights = None
+
     for _ in range(simulations):
-        chosen = rng.choice(candidates, size=draw, replace=False)
-        results.append(chosen.mean())
+        # 층화 추출: 전체 범위를 candidate_count개 구간으로 나누고 각 구간에서 1개씩 난수 생성
+        # → 15개가 전체 범위에 고르게 분포 (쏠림 방지, 실제 G2B 방식)
+        offsets = rng.random(candidate_count)          # 각 구간 내 위치 (0~1)
+        candidates = np.floor(
+            low + (np.arange(candidate_count) + offsets) * interval
+        ).astype(np.int64)
+        if _weights is not None:
+            chosen = rng.choice(candidates, size=draw, replace=False, p=_weights)
+        else:
+            chosen = rng.choice(candidates, size=draw, replace=False)
+        results.append(math.floor(chosen.mean()))  # 나라장터: 예정가격 소수점 버림(절사)
     arr = np.array(results)
     return {
         "mean": float(arr.mean()),
@@ -47,12 +72,18 @@ def calc_bid_range(
     bid_type: str = "용역",
     custom_lower_rate: float | None = None,
     candidate_count: int = 15,
-    draw_count: int = 2,
+    draw_count: int = 4,
+    a_value: float = 0.0,
+    price_range: tuple = (-2.0, 3.0),
+    use_psychology_weight: bool = False,
 ) -> dict:
     """
     낙찰 예상 범위 계산 + 안전구간(어떤 예정가격에도 유효한 구간) 산출
+    a_value: 순공사원가(A값). 0이면 기존 산식, 0 초과면 A값 적용 산식 사용
+      A값 적용: 낙찰하한금액 = (예정가격 - A값) × 낙찰하한율 + A값
+    use_psychology_weight: 입찰자 심리 가중치 반영 여부
     """
-    sim = simulate_expected_price(base_price, candidate_count=candidate_count, draw_count=draw_count)
+    sim = simulate_expected_price(base_price, candidate_count=candidate_count, draw_count=draw_count, price_range=price_range, use_psychology_weight=use_psychology_weight)
     lower_rate_pct = custom_lower_rate if custom_lower_rate is not None else AWARD_LOWER_RATE.get(bid_type, 88.0)
     lower_rate = lower_rate_pct / 100
 
@@ -62,10 +93,18 @@ def calc_bid_range(
     expected_p10  = sim["p10"]
     expected_p90  = sim["p90"]
 
+    def _floor(ep: float) -> float:
+        """낙찰하한금액 계산 (A값 적용 여부에 따라 산식 분기)
+        나라장터: 낙찰하한금액 소수점 올림(절상) → math.ceil 강제 적용
+        부동소수점 오차 방어: ceil 전 round(5자리)로 미세 먼지 제거"""
+        if a_value > 0:
+            return math.ceil(round((ep - a_value) * lower_rate + a_value, 5))
+        return math.ceil(round(ep * lower_rate, 5))
+
     # 낙찰하한금액 범위
-    award_floor_min  = expected_min * lower_rate   # 예정가 최소일 때 하한금액
-    award_floor_mean = expected_mean * lower_rate
-    award_floor_max  = expected_max * lower_rate   # 예정가 최대일 때 하한금액
+    award_floor_min  = _floor(expected_min)
+    award_floor_mean = _floor(expected_mean)
+    award_floor_max  = _floor(expected_max)
 
     # ── 안전구간 ──────────────────────────────────────────────────────
     # 어떤 예정가격이 나와도 투찰이 유효(낙찰 자격)한 구간
@@ -76,7 +115,7 @@ def calc_bid_range(
     safe_low  = award_floor_max          # 안전구간 하한 (= 최대 낙찰하한금액)
     safe_high = expected_min             # 안전구간 상한 (= 최소 예정가격)
     safe_mid  = (safe_low + safe_high) / 2
-    safe_exists = safe_high > safe_low   # 안전구간이 존재하는지 여부
+    safe_exists = safe_high >= safe_low   # 안전구간이 존재하는지 여부
 
     # 경쟁력 투찰 구간: 안전구간 하단 40% (낮을수록 경쟁력 ↑)
     # 안전구간이 없으면 평균낙찰하한금액 ± 소폭 완충
@@ -93,7 +132,11 @@ def calc_bid_range(
     dist = np.array(sim["distribution"])
     def valid_prob(bid_price: float) -> float:
         """해당 투찰가가 유효할 확률 (낙찰하한 이상 AND 예정가 이하)"""
-        valid = ((bid_price >= dist * lower_rate) & (bid_price <= dist))
+        if a_value > 0:
+            floors = np.ceil(np.round((dist - a_value) * lower_rate + a_value, 5))
+        else:
+            floors = np.ceil(np.round(dist * lower_rate, 5))
+        valid = ((bid_price >= floors) & (bid_price <= dist))
         return float(valid.mean() * 100)
 
     safe_low_prob  = valid_prob(safe_low)
@@ -137,6 +180,9 @@ def calc_bid_range(
         "sajeong_safe_low":  sajeong_safe_low,
         "sajeong_safe_high": sajeong_safe_high,
         "sajeong_safe_mid":  sajeong_safe_mid,
+        # A값 / 예비가격 범위
+        "a_value": a_value,
+        "price_range": price_range,
         # 분포 데이터
         "distribution": sim["distribution"],
     }
@@ -257,10 +303,11 @@ def tiered_filter(
     return apply_time_weight(df), f"5단계: 전체 {len(df)}건 (금액 필터 없음)"
 
 
-def recommend_from_stats(winner_df: pd.DataFrame, expected_price_mean: float) -> dict | None:
+def recommend_from_stats(winner_df: pd.DataFrame, expected_price_mean: float, base_price: float | None = None) -> dict | None:
     """
     과거 낙찰 데이터 기반 추천 투찰가 산출
     낙찰률(예정가격 대비 낙찰금액 %) 분포를 분석해 최적 구간 도출
+    base_price: 현재 기초금액 — 제공 시 사정률 기반 추천도 함께 산출
     """
     if winner_df.empty or "낙찰률" not in winner_df.columns:
         return None
@@ -284,28 +331,24 @@ def recommend_from_stats(winner_df: pd.DataFrame, expected_price_mean: float) ->
     median_rate = float(rates.median())
     std_rate = float(rates.std())
 
-    # 각 구간별 낙찰 확률
     total = len(rates)
     def pct_in_range(lo, hi):
         return round(float(((rates >= lo) & (rates < hi)).sum() / total * 100), 1)
 
-    # 추천가: 최빈 낙찰률 구간을 예정가격에 적용
     rec_rate_low  = mode_low / 100
     rec_rate_high = mode_high / 100
     rec_rate_mean = mean_rate / 100
 
-    return {
+    result = {
         "sample_count": total,
         "mean_rate": mean_rate,
         "median_rate": median_rate,
         "std_rate": std_rate,
         "mode_range": (round(mode_low, 3), round(mode_high, 3)),
         "mode_pct": pct_in_range(mode_low, mode_high),
-        # 추천 투찰가 (예정가격 평균 기준)
         "recommend_low":  expected_price_mean * rec_rate_low,
         "recommend_high": expected_price_mean * rec_rate_high,
         "recommend_mean": expected_price_mean * rec_rate_mean,
-        # 확률 구간
         "prob_p25_p75": pct_in_range(
             float(np.percentile(rates, 25)),
             float(np.percentile(rates, 75))
@@ -314,6 +357,30 @@ def recommend_from_stats(winner_df: pd.DataFrame, expected_price_mean: float) ->
         "rate_p75": float(np.percentile(rates, 75)),
         "rate_distribution": rates.tolist(),
     }
+
+    # 사정률 분석: 낙찰금액/기초금액 — 발주처별 낙찰 경향
+    if "사정률" in winner_df.columns:
+        sj = winner_df["사정률"].dropna()
+        sj = sj[(sj > 50) & (sj <= 110)]
+        if len(sj) >= 5:
+            sj_bins = np.arange(sj.min() - 0.05, sj.max() + 0.15, 0.1)
+            sj_counts, sj_edges = np.histogram(sj, bins=sj_bins)
+            sj_peak = sj_counts.argmax()
+            result["sajeong_mean"]   = round(float(sj.mean()), 3)
+            result["sajeong_median"] = round(float(sj.median()), 3)
+            result["sajeong_std"]    = round(float(sj.std()), 3)
+            result["sajeong_p25"]    = round(float(np.percentile(sj, 25)), 3)
+            result["sajeong_p75"]    = round(float(np.percentile(sj, 75)), 3)
+            result["sajeong_mode_range"] = (
+                round(float(sj_edges[sj_peak]), 3),
+                round(float(sj_edges[sj_peak + 1]), 3),
+            )
+            result["sajeong_distribution"] = sj.tolist()
+            # 사정률 기반 추천 투찰가 (기초금액 × 사정률 중앙값)
+            if base_price:
+                result["sajeong_recommend"] = base_price * result["sajeong_median"] / 100
+
+    return result
 
 
 def analyze_winner_stats(df: pd.DataFrame, base_price: float | None = None) -> dict:
@@ -332,11 +399,12 @@ def analyze_winner_stats(df: pd.DataFrame, base_price: float | None = None) -> d
         result["낙찰률_max"] = float(rates.max())
         result["낙찰률_distribution"] = rates.tolist()
 
-    if base_price and "낙찰금액" in df.columns and "추정금액" in df.columns:
-        # 사정률 계산 (낙찰금액/추정금액 × 100)
-        valid = df[["낙찰금액", "추정금액"]].dropna()
+    if base_price and "낙찰금액" in df.columns and "기초금액" in df.columns:
+        # 사정률 계산 (낙찰금액/기초금액 × 100)
+        valid = df[["낙찰금액", "기초금액"]].dropna()
+        valid = valid[valid["기초금액"] > 0]
         if not valid.empty:
-            sajeong = (valid["낙찰금액"] / valid["추정금액"] * 100)
+            sajeong = (valid["낙찰금액"] / valid["기초금액"] * 100)
             result["사정률_mean"] = float(sajeong.mean())
             result["사정률_median"] = float(sajeong.median())
             result["사정률_distribution"] = sajeong.tolist()
@@ -379,10 +447,17 @@ def calc_optimal_bid(
     dist    = np.array(bid_result["distribution"])
     lr      = bid_result["lower_rate_pct"] / 100
 
-    # 1. 범위 결정: 안전구간(90%) ∩ 과거통계
+    # 1. 범위 결정: 안전구간(90%) ∩ 과거통계 (사정률 우선 반영)
     if stats:
-        opt_low  = max(stats["recommend_low"],  low_90)
-        opt_high = min(stats["recommend_high"], high_90)
+        # 사정률 기반 추천가가 있으면 이를 중심으로 타겟 밴드 형성 (발주처 고유 성향 우선)
+        if stats.get("sajeong_recommend") and stats["sajeong_recommend"] > 0:
+            target_bid = stats["sajeong_recommend"]
+            _band_half = (stats["recommend_high"] - stats["recommend_low"]) / 2
+            opt_low  = max(target_bid - _band_half, low_90)
+            opt_high = min(target_bid + _band_half, high_90)
+        else:
+            opt_low  = max(stats["recommend_low"],  low_90)
+            opt_high = min(stats["recommend_high"], high_90)
         if opt_low >= opt_high:
             opt_low, opt_high = low_90, high_90
     else:
@@ -415,7 +490,12 @@ def calc_optimal_bid(
     optimal = max(opt_low, min(opt_high, optimal))
 
     # 3. 유효 확률 및 사정률
-    valid_prob = float(((optimal >= dist * lr) & (optimal <= dist)).mean() * 100)
+    _av = bid_result.get("a_value", 0.0)
+    if _av > 0:
+        _floors = np.ceil(np.round((dist - _av) * lr + _av, 5))
+    else:
+        _floors = np.ceil(np.round(dist * lr, 5))
+    valid_prob = float(((optimal >= _floors) & (optimal <= dist)).mean() * 100)
     sajeong    = optimal / base * 100
 
     # 단일 최적 투찰가 ±1% 협폭 범위 (opt_low/opt_high는 산출 근거 범위)
