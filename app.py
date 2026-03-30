@@ -825,19 +825,45 @@ border-radius:8px;padding:14px 18px;margin-top:8px;">
                 else:
                     st.error(f"**{micro_price:,}원** — {survived:,} / {len(_dist):,}회만 유효 ({win_rate:.2f}%) 🚨 하한 미달 위험 높음")
 
-                # ±5원 인근 확률 미니 테이블
+                # 유효확률 ±1% 범위 테이블
+                _lo_prob = max(win_rate - 1.0, 0.0)
+                _hi_prob = min(win_rate + 1.0, 100.0)
+
+                # 아래 경계: win_rate-1% 되는 첫 가격 탐색 (하방)
+                _p_low = micro_price
+                while _p_low > micro_price - 5000:
+                    _, _pr = _calc_prob(_p_low - 1)
+                    if _pr < _lo_prob:
+                        break
+                    _p_low -= 1
+
+                # 위 경계: win_rate+1% 되는 마지막 가격 탐색 (상방)
+                _p_high = micro_price
+                while _p_high < micro_price + 5000:
+                    _, _pr = _calc_prob(_p_high + 1)
+                    if _pr > _hi_prob:
+                        break
+                    _p_high += 1
+
                 _micro_rows = []
-                for delta in range(-5, 6):
-                    p = micro_price + delta
+                for p in range(_p_low, _p_high + 1):
                     s, prob = _calc_prob(p)
                     _micro_rows.append({
                         "투찰가": f"{p:,}원",
                         "유효 횟수": f"{s:,}",
                         "유효 확률": f"{prob:.2f}%",
-                        "비고": "◀ 현재 입력" if delta == 0 else "",
                     })
+                _micro_df = pd.DataFrame(_micro_rows)
+
+                # 현재 입력가 행 강조
+                _cur_idx = micro_price - _p_low
+                def _highlight_cur(row):
+                    if row.name == _cur_idx:
+                        return ["background-color:#ffd700;font-weight:bold;color:#000"] * len(row)
+                    return [""] * len(row)
+
                 st.dataframe(
-                    pd.DataFrame(_micro_rows),
+                    _micro_df.style.apply(_highlight_cur, axis=1),
                     use_container_width=True, hide_index=True,
                 )
 
