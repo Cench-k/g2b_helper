@@ -297,18 +297,32 @@ class G2BAPI:
             try: bss_amt = float(item.get("bssAmt") or 0) or None
             except: bss_amt = None
 
+            # 참가제한지역: prtcptLmtRgnNm (없으면 ntceInsttRgnNm 시도)
+            region = (item.get("prtcptLmtRgnNm") or item.get("ntceInsttRgnNm") or "").strip()
+
+            # 업종: 용역구분 → srvceDivNm, 공사업종 → mainCnstwkBsns, 물품분류 → prdctClsfcNm
+            industry = (
+                item.get("srvceDivNm") or
+                item.get("mainCnstwkBsns") or
+                item.get("prdctClsfcNm") or
+                item.get("indstrytyClsfNm") or
+                ""
+            ).strip()
+
             rows.append({
-                "공고번호":   item.get("bidNtceNo", ""),
-                "공고명":    item.get("bidNtceNm", ""),
-                "공고기관":  item.get("ntceInsttNm", ""),
-                "수요기관":  item.get("dminsttNm", ""),
-                "개찰일시":  item.get("opengDt", ""),
-                "참가업체수": int(item.get("prtcptCnum") or 0),
-                "낙찰업체명": corp_name,
-                "낙찰금액":  award_amt,
-                "예정가격":  presmpt,
-                "기초금액":  bss_amt,
-                "진행상태":  item.get("progrsDivCdNm", ""),
+                "공고번호":     item.get("bidNtceNo", ""),
+                "공고명":      item.get("bidNtceNm", ""),
+                "공고기관":    item.get("ntceInsttNm", ""),
+                "수요기관":    item.get("dminsttNm", ""),
+                "개찰일시":    item.get("opengDt", ""),
+                "참가업체수":   int(item.get("prtcptCnum") or 0),
+                "낙찰업체명":   corp_name,
+                "낙찰금액":    award_amt,
+                "예정가격":    presmpt,
+                "기초금액":    bss_amt,
+                "진행상태":    item.get("progrsDivCdNm", ""),
+                "참가제한지역": region,
+                "업종":        industry,
             })
         df = pd.DataFrame(rows)
         df["낙찰금액"] = pd.to_numeric(df["낙찰금액"], errors="coerce")

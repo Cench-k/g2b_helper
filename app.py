@@ -1023,6 +1023,27 @@ elif page == "📊 낙찰 통계 분석":
         with col5:
             end_dt = st.date_input("조회 종료일", value=datetime.now())
 
+        col6, col7 = st.columns(2)
+        _REGIONS = [
+            "전체", "서울특별시", "부산광역시", "대구광역시", "인천광역시",
+            "광주광역시", "대전광역시", "울산광역시", "세종특별자치시",
+            "경기도", "강원특별자치도", "충청북도", "충청남도",
+            "전북특별자치도", "전라남도", "경상북도", "경상남도",
+            "제주특별자치도", "전국",
+        ]
+        with col6:
+            region_filter = st.selectbox(
+                "참가제한지역 (선택)",
+                _REGIONS,
+                help="해당 지역 업체만 참가 가능한 공고 필터링. '전국'은 지역 제한 없는 공고입니다.",
+            )
+        with col7:
+            industry_filter = st.text_input(
+                "업종 (선택)",
+                placeholder="예: IT서비스, 건축공사, 전산장비",
+                help="용역구분·공사업종·물품분류 키워드 필터. 일부 입력도 검색됩니다.",
+            )
+
         st.caption("※ 기간이 길수록 통계 정확도 향상 (14일씩 자동 분할 조회)")
         submitted = st.form_submit_button("📊 분석하기", use_container_width=True, type="primary")
 
@@ -1058,7 +1079,27 @@ elif page == "📊 낙찰 통계 분석":
                 st.warning(f"{ERR['E-07']} ({e})")
 
         if df is not None and not df.empty:
-            st.success(f"총 {len(df)}건 낙찰 데이터 분석")
+            total_fetched = len(df)
+
+            # ── 참가제한지역 / 업종 클라이언트 필터링 ──────────────────────
+            if region_filter and region_filter != "전체" and "참가제한지역" in df.columns:
+                df = df[df["참가제한지역"].str.contains(region_filter, na=False)]
+            if industry_filter and "업종" in df.columns:
+                df = df[df["업종"].str.contains(industry_filter, na=False, case=False)]
+
+            if df.empty:
+                st.warning("조회된 데이터가 없습니다. 필터 조건을 완화해 보세요.")
+                st.stop()
+
+            filter_info = f"총 {total_fetched}건 조회 → 필터 적용 후 **{len(df)}건** 분석"
+            if region_filter != "전체" or industry_filter:
+                applied = []
+                if region_filter != "전체":
+                    applied.append(f"지역: {region_filter}")
+                if industry_filter:
+                    applied.append(f"업종: {industry_filter}")
+                filter_info += f" ({', '.join(applied)})"
+            st.success(filter_info)
 
             # 핵심 통계
             c1, c2, c3, c4 = st.columns(4)
