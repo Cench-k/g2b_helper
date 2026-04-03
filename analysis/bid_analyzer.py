@@ -423,6 +423,9 @@ def recommend_from_stats(winner_df: pd.DataFrame, expected_price_mean: float, ba
                 round(float(sj_edges[sj_peak]), 3),
                 round(float(sj_edges[sj_peak + 1]), 3),
             )
+            result["sajeong_mode_pct"] = round(
+                float(((sj >= sj_edges[sj_peak]) & (sj < sj_edges[sj_peak + 1])).sum() / len(sj) * 100), 1
+            )
             result["sajeong_distribution"] = sj.tolist()
             # 사정률 기반 추천 투찰가 (기초금액 × 사정률 중앙값)
             if base_price:

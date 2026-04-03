@@ -504,6 +504,15 @@ if page == "💰 낙찰 예상가 계산기":
             r     = result
             stats = r.get("stats")
 
+            # 시뮬레이션 분포 & 낙찰하한 배열 — 이후 여러 계산에서 공용
+            _sim_dist = np.array(r["distribution"])
+            _sim_lr   = r["lower_rate_pct"] / 100
+            _sim_av   = r.get("a_value", 0.0)
+            if _sim_av > 0:
+                _sim_floors = np.ceil(np.round((_sim_dist - _sim_av) * _sim_lr + _sim_av, 5))
+            else:
+                _sim_floors = np.ceil(np.round(_sim_dist * _sim_lr, 5))
+
             # ── 단일 최적 투찰가 (경쟁률 반영) ─────────────────────────
             est_comp = r.get("estimated_comp")
             # 경쟁사 수: 직접 입력 우선, 0이면 과거 데이터 추정값 자동 사용
@@ -629,27 +638,68 @@ border-radius:8px;padding:16px 20px;margin-bottom:12px;">
                 sc3.metric("표준편차",      f"{stats['std_rate']:.3f}%p")
                 sc4.metric("25~75% 구간",  f"{stats['rate_p25']:.2f}~{stats['rate_p75']:.2f}%")
 
-                # 사정률 분석 (기초금액 기반 낙찰 경향)
+                # ── 가격 선택 핵심 지표 ──────────────────────────────────
                 if stats.get("sajeong_mean"):
+                    # 과거 낙찰가 기준 유효율 계산
+                    _sj_vals  = np.array(stats["sajeong_distribution"])
+                    _past_bids = r["base_price"] * _sj_vals / 100
+                    _past_vps  = np.array([
+                        float(((b >= _sim_floors) & (b <= _sim_dist)).mean() * 100)
+                        for b in _past_bids
+                    ])
+                    _mean_vp   = float(_past_vps.mean())
+                    _bins_vp   = np.arange(0, 105, 5)
+                    _hist_vp, _edges_vp = np.histogram(_past_vps, bins=_bins_vp)
+                    _mi        = int(_hist_vp.argmax())
+                    _mode_vp_lo = int(_edges_vp[_mi])
+                    _mode_vp_hi = int(_edges_vp[_mi + 1])
+                    _mode_vp_pct = round(float(_hist_vp[_mi] / len(_past_vps) * 100), 1)
+
+                    _sj_mode = stats.get("sajeong_mode_range", (0, 0))
+                    _sj_mode_pct = stats.get("sajeong_mode_pct", 0)
+                    _sj_rec  = stats.get("sajeong_recommend")
+
                     st.markdown(f"""
-<div style="background:#f8f9fa;border-left:5px solid #8e44ad;
-border-radius:8px;padding:14px 18px;margin-top:8px;">
-  <div style="font-size:13px;color:#666;margin-bottom:4px">
-    📏 사정률 분석 — 기초금액 대비 낙찰금액 비율 (발주처별 낙찰 경향)
+<div style="background:linear-gradient(135deg,#0d3349,#145a7c);color:white;
+border-radius:12px;padding:18px 22px;margin-top:10px;">
+  <div style="font-size:13px;opacity:.8;margin-bottom:10px">
+    🎯 가격 선택 핵심 지표 &nbsp;—&nbsp; {filter_desc}
   </div>
-  <div style="font-size:20px;font-weight:700;color:#8e44ad">
-    중앙값 {stats['sajeong_median']:.3f}% &nbsp;|&nbsp; 평균 {stats['sajeong_mean']:.3f}%
-    &nbsp;|&nbsp; 25~75% 구간 {stats['sajeong_p25']:.2f}~{stats['sajeong_p75']:.2f}%
+  <div style="display:flex;gap:28px;flex-wrap:wrap;margin-bottom:12px;">
+    <div>
+      <div style="font-size:11px;opacity:.7;margin-bottom:2px">최빈 사정률 구간</div>
+      <div style="font-size:22px;font-weight:800;color:#f1c40f">{_sj_mode[0]}~{_sj_mode[1]}%</div>
+      <div style="font-size:11px;opacity:.65">전체의 {_sj_mode_pct}%가 여기서 낙찰</div>
+    </div>
+    <div>
+      <div style="font-size:11px;opacity:.7;margin-bottom:2px">사정률 중앙값</div>
+      <div style="font-size:22px;font-weight:800;color:#2ecc71">{stats['sajeong_median']:.3f}%</div>
+      <div style="font-size:11px;opacity:.65">{("→ " + format_won_exact(int(_sj_rec))) if _sj_rec else "기초금액 기준"}</div>
+    </div>
+    <div>
+      <div style="font-size:11px;opacity:.7;margin-bottom:2px">과거 1등 유효율 최빈</div>
+      <div style="font-size:22px;font-weight:800;color:#3498db">{_mode_vp_lo}~{_mode_vp_hi}%</div>
+      <div style="font-size:11px;opacity:.65">전체의 {_mode_vp_pct}%가 이 유효율 구간</div>
+    </div>
+    <div>
+      <div style="font-size:11px;opacity:.7;margin-bottom:2px">과거 1등 유효율 평균</div>
+      <div style="font-size:22px;font-weight:800;color:#e74c3c">{_mean_vp:.1f}%</div>
+      <div style="font-size:11px;opacity:.65">사정률 평균 {stats['sajeong_mean']:.3f}%</div>
+    </div>
   </div>
-  {"<div style='font-size:13px;color:#666;margin-top:4px'>→ 이 발주처 유사 공고 투찰가 추천: <b>" + format_won_exact(int(stats['sajeong_recommend'])) + "</b> (기초금액 × " + str(stats['sajeong_median']) + "%)</div>" if stats.get('sajeong_recommend') else ""}
+  <div style="font-size:12px;opacity:.75;border-top:1px solid rgba(255,255,255,.2);padding-top:8px">
+    💡 과거 낙찰자들은 기초금액의 <b>{_sj_mode[0]}~{_sj_mode[1]}%</b> 수준에서 가장 많이 낙찰됐으며,
+    해당 투찰가의 유효율은 평균 <b>{_mean_vp:.1f}%</b>였습니다.
+    유효율이 높을수록 안전하지만 낙찰 경쟁력은 낮아집니다.
+  </div>
 </div>""", unsafe_allow_html=True)
 
             # ── 통합 시각화 차트 ─────────────────────────────────────────
             tab_chart1, tab_chart2 = st.tabs(["투찰가별 유효 확률", "예정가격 분포"])
 
             with tab_chart1:
-                dist_arr = np.array(r["distribution"])
-                lr = r["lower_rate_pct"] / 100
+                dist_arr = _sim_dist
+                lr = _sim_lr
                 # x축: 기초금액의 80%~105% 구간
                 x_range = np.linspace(r["base_price"] * 0.80, r["base_price"] * 1.05, 300)
                 probs = [float(((x >= dist_arr * lr) & (x <= dist_arr)).mean() * 100)
@@ -754,13 +804,9 @@ border-radius:8px;padding:14px 18px;margin-top:8px;">
             st.subheader("🎯 1원 단위 투찰가 정밀 튜닝")
             st.caption("유효 확률 1% 단위 구간으로 바로 이동하거나, 1원 단위로 직접 조정하세요.")
 
-            _av   = r.get("a_value", 0.0)
-            _lr   = r["lower_rate_pct"] / 100
-            _dist = np.array(r["distribution"])
-            if _av > 0:
-                _floors = np.ceil(np.round((_dist - _av) * _lr + _av, 5))
-            else:
-                _floors = np.ceil(np.round(_dist * _lr, 5))
+            # 상단에서 정의한 공용 배열 참조
+            _dist   = _sim_dist
+            _floors = _sim_floors
 
             def _calc_prob(price: int) -> tuple:
                 survived = int(((price >= _floors) & (price <= _dist)).sum())
