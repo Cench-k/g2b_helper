@@ -195,31 +195,38 @@ class G2BAPI:
         return None
 
     def _get_bss_amt(self, bid_no: str, bid_type: str) -> float | None:
-        """기초금액공개정보서비스에서 정확한 기초금액 조회"""
+        """기초금액공개정보서비스에서 정확한 기초금액 조회
+        - bidNtceNo 파라미터 미지원 API가 많으므로 날짜 범위 검색 후 클라이언트 필터
+        - 30일 → 90일 → 180일 구간 순으로 확장 시도
+        """
         now = datetime.now()
+        bid_no_clean = bid_no.split("-")[0].strip()
+
         for days_back in [30, 90, 180]:
             start = _fmt_bid(now - timedelta(days=days_back))
             end   = _fmt_bid(now)
-            url   = f"{BSS_BASE}/{BSS_OPS.get(bid_type, BSS_OPS['용역'])}"
-            try:
-                data = self._get(url, {
-                    "numOfRows": 100, "pageNo": 1,
-                    "inqryDiv": "1",
-                    "inqryBgnDt": start + "0000",
-                    "inqryEndDt": end   + "2359",
-                    "bidNtceNo": bid_no,
-                })
-                for item in self._items(data):
-                    if item.get("bidNtceNo", "").startswith(bid_no):
-                        v = item.get("bssAmt") or item.get("bidBasicAmt")
-                        try:
-                            amt = float(v)
-                            if amt > 0:
-                                return amt
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+            for btype in ([bid_type] + [t for t in BSS_OPS if t != bid_type]):
+                url = f"{BSS_BASE}/{BSS_OPS[btype]}"
+                try:
+                    data = self._get(url, {
+                        "numOfRows": 500, "pageNo": 1,
+                        "inqryDiv": "1",
+                        "inqryBgnDt": start + "0000",
+                        "inqryEndDt": end   + "2359",
+                    })
+                    for item in self._items(data):
+                        no = item.get("bidNtceNo", "")
+                        if no == bid_no_clean or no == bid_no or no.startswith(bid_no_clean):
+                            for field in ("bssAmt", "bidBasicAmt", "opengBssAmt"):
+                                v = item.get(field)
+                                try:
+                                    amt = float(v)
+                                    if amt > 0:
+                                        return amt
+                                except Exception:
+                                    pass
+                except Exception:
+                    continue
         return None
 
     def _parse_bid_detail(self, item: dict, bid_type: str) -> dict:
@@ -227,16 +234,20 @@ class G2BAPI:
             try: return float(v) if v else None
             except: return None
 
-        # 기초금액: bssAmt(직접 필드) 우선 → 추정가격+VAT → 배정예산액
+        # 기초금액: 직접 필드 → 배정예산액(VAT 포함 그대로) → 추정가격+VAT 계산
         def pos(v):
             """양수인 경우만 반환"""
             x = num(v)
             return x if x and x > 0 else None
 
-        base = (
-            pos(item.get("bssAmt"))
-            or pos(item.get("bidBasicAmt"))
-        )
+        # 1순위: 기초금액 직접 필드
+        base = pos(item.get("bssAmt")) or pos(item.get("bidBasicAmt"))
+
+        # 2순위: 배정예산액 — VAT 포함 금액으로 공개되는 경우 많음 (×1.1 하지 않음)
+        if not base:
+            base = pos(item.get("asignBdgtAmt")) or pos(item.get("bdgtAmt"))
+
+        # 3순위: 추정가격 + VAT 계산 (VAT 미포함 필드일 때만)
         if not base:
             presmpt = pos(item.get("presmptPrce"))
             vat     = pos(item.get("VAT")) or pos(item.get("indutyVAT"))
@@ -244,8 +255,6 @@ class G2BAPI:
                 base = presmpt + vat
             elif presmpt:
                 base = round(presmpt * 1.1)  # VAT 10% 추정
-        if not base:
-            base = pos(item.get("asignBdgtAmt")) or pos(item.get("bdgtAmt"))
         # 복수예가 후보 수 / 추첨 수 (공고마다 다를 수 있음, 기본 15개/2개)
         total_prd = int(item.get("totPrdprcNum") or 15)
         draw_prd  = int(item.get("drwtPrdprcNum") or 4)
