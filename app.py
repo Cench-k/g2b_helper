@@ -380,7 +380,8 @@ if page == "💰 낙찰 예상가 계산기":
             st.caption(f"※ 기본값({default_rate}%)에서 변경됨")
 
         # 기초금액 — 공고 자동적용 또는 직접 입력
-        _base_from_bid = int(_apply["기초금액"]) if _apply.get("기초금액") else None
+        _base_raw = _apply.get("기초금액")
+        _base_from_bid = int(_base_raw) if _base_raw and int(_base_raw) >= 100000 else None
         input_method = st.radio("금액 입력 방식", ["직접 입력 (원)", "억원 단위"], key=f"input_method_{_wkey}")
         if input_method == "직접 입력 (원)":
             base_price_input = st.number_input(
