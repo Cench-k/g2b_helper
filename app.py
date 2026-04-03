@@ -346,10 +346,14 @@ if page == "💰 낙찰 예상가 계산기":
             ic3.markdown(f"**공사종류**  \n{info['공사종류']}")
 
             ia1, ia2, ia3 = st.columns(3)
-            ia1.markdown(f"**기초금액**  \n{format_won(info['기초금액']) if info['기초금액'] else '-'}")
+            _base_disp = info.get('기초금액')
+            ia1.markdown(f"**기초금액**  \n{format_won_exact(int(_base_disp))} ({format_won(int(_base_disp))})" if _base_disp else "**기초금액**  \n❌ 미제공 (직접 입력 필요)")
             ia2.markdown(f"**낙찰하한율**  \n{info['낙찰하한율']}%" if info['낙찰하한율'] else "**낙찰하한율**  \n미제공")
             ia3.markdown(f"**개찰일시**  \n{info['개찰일시'] or '-'}")
-            st.success("✅ 아래 계산기에 값이 자동 적용됐습니다.")
+            if not _base_disp:
+                st.warning("⚠️ API에서 기초금액을 가져오지 못했습니다. 아래 기초금액란에 공고문 기재 금액을 직접 입력하세요.")
+            else:
+                st.success("✅ 아래 계산기에 값이 자동 적용됐습니다.")
 
     # 공고 자동 적용 값 읽기
     _apply = st.session_state.get("apply_bid", {})
@@ -1113,20 +1117,33 @@ elif page == "🔍 입찰공고 검색":
         if st.button("📊 이 공고로 계산기 적용", type="primary"):
             row = df.iloc[selected_idx]
             bid_no = str(row.get("공고번호", ""))
-            base = float(row.get("추정금액") or 0) * 1.1 if row.get("추정금액") else None
             _agency = str(row.get("공고기관", ""))
-            info = {
-                "공고번호":  bid_no,
-                "공고명":   str(row.get("공고명", "")),
-                "공고기관": _agency,
-                "기초금액": base,
-                "낙찰하한율": float(row.get("낙찰하한율") or 0) or None,
-                "계약방식": str(row.get("계약방식", "")),
-                "개찰일시": str(row.get("개찰일시", "")),
-                "공사종류": _stype,
-                "후보수": 15, "추첨수": 4,
-                "예가범위_라벨": guess_price_range_label(_agency),
-            }
+            # 기초금액 정확도를 위해 공고 상세 API 우선 호출
+            with st.spinner("공고 상세 조회 중..."):
+                detail = None
+                try:
+                    detail = api.get_bid_by_no(bid_no)
+                except Exception:
+                    pass
+            if detail and detail.get("기초금액"):
+                info = detail
+                info.setdefault("예가범위_라벨", guess_price_range_label(_agency))
+            else:
+                # 상세 조회 실패 시 목록 데이터로 fallback
+                _presmpt = float(row.get("추정금액") or 0)
+                base = round(_presmpt * 1.1) if _presmpt > 0 else None
+                info = {
+                    "공고번호":  bid_no,
+                    "공고명":   str(row.get("공고명", "")),
+                    "공고기관": _agency,
+                    "기초금액": base,
+                    "낙찰하한율": float(row.get("낙찰하한율") or 0) or None,
+                    "계약방식": str(row.get("계약방식", "")),
+                    "개찰일시": str(row.get("개찰일시", "")),
+                    "공사종류": _stype,
+                    "후보수": 15, "추첨수": 4,
+                    "예가범위_라벨": guess_price_range_label(_agency),
+                }
             cache_save_bid(bid_no, info)
             st.session_state["apply_bid"] = info
             st.session_state["loaded_bid"] = info
