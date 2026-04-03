@@ -7,7 +7,16 @@ from datetime import datetime, timedelta
 
 from api.g2b_api import G2BAPI
 from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, format_won_exact, calc_optimal_bid, estimate_competitor_count
-from analysis.demo_data import get_demo_bid_list, get_demo_winner_list, get_demo_bid_by_no
+# 에러 코드 정의
+ERR = {
+    "E-01": "[E-01] API 키 인증 오류입니다. data.go.kr에서 서비스 승인 상태를 확인하세요.",
+    "E-02": "[E-02] API 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요.",
+    "E-03": "[E-03] API 응답 시간이 초과됐습니다. 네트워크 상태를 확인하세요.",
+    "E-04": "[E-04] 조달청 API 서버 오류입니다. 잠시 후 다시 시도하세요.",
+    "E-05": "[E-05] 검색 결과가 없습니다. 검색어 또는 날짜 범위를 조정해보세요.",
+    "E-06": "[E-06] 해당 공고번호로 공고를 찾을 수 없습니다. 번호를 확인하세요.",
+    "E-07": "[E-07] 알 수 없는 오류가 발생했습니다.",
+}
 from db.supabase_client import save_bid_record, load_bid_records, delete_bid_record, cache_get_bid, cache_save_bid
 
 st.set_page_config(
@@ -73,10 +82,21 @@ def check_api_status() -> tuple[bool, str]:
     try:
         df = api.get_bid_list(bid_type="용역", rows=1)
         if df.empty:
-            return False, "API 응답은 받았으나 데이터 없음 (인증키 확인 필요)"
+            return False, ERR["E-01"]
         return True, ""
+    except ConnectionError as e:
+        msg = str(e)
+        if "429" in msg or "한도" in msg:
+            return False, ERR["E-02"]
+        if "시간 초과" in msg or "Timeout" in msg:
+            return False, ERR["E-03"]
+        if "500" in msg or "서버" in msg:
+            return False, ERR["E-04"]
+        if "401" in msg or "403" in msg or "승인" in msg or "인증" in msg:
+            return False, ERR["E-01"]
+        return False, f"{ERR['E-07']} ({msg})"
     except Exception as e:
-        return False, str(e)
+        return False, f"{ERR['E-07']} ({e})"
 
 # ── 사이드바 ──────────────────────────────────────────────────────────────
 st.sidebar.title("🏛️ 나라장터 낙찰 도우미")
@@ -289,10 +309,6 @@ if page == "💰 낙찰 예상가 계산기":
         # 불러온 공고 정보 표시
         if "loaded_bid" in st.session_state:
             info = st.session_state["loaded_bid"]
-            is_demo = info.get("_is_demo", False)
-            if is_demo:
-                st.caption("⚠️ API 미연결 — 데모 데이터 적용됨")
-
             ic1, ic2, ic3 = st.columns(3)
             ic1.markdown(f"**공고명**  \n{info['공고명']}")
             ic2.markdown(f"**공고기관**  \n{info['공고기관']}")
@@ -464,10 +480,6 @@ if page == "💰 낙찰 예상가 계산기":
                     except Exception:
                         pass
 
-                    is_demo = winner_df.empty
-                    if is_demo:
-                        winner_df = get_demo_winner_list(bid_type=bid_type, rows=500)
-
                     # 단계적 필터링
                     winner_df, filter_desc = tiered_filter(
                         winner_df,
@@ -476,7 +488,6 @@ if page == "💰 낙찰 예상가 계산기":
                         contract_type=contract_type,
                     )
 
-                    result["stats_is_demo"]   = is_demo
                     result["stats_keyword"]   = keyword
                     result["stats_filter_desc"] = filter_desc
                     result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"], base_price=base_price_input)
@@ -581,9 +592,7 @@ border-radius:14px;padding:22px 28px;margin-bottom:12px;">
 
             # ── 과거 통계 반영 추천가 ────────────────────────────────────
             if stats:
-                is_demo_stats = r.get("stats_is_demo", False)
                 filter_desc   = r.get("stats_filter_desc", "")
-                demo_label    = " (데모)" if is_demo_stats else ""
                 # 안전구간과 과거통계 추천가의 교집합
                 stat_low  = max(stats["recommend_low"],  r["safe_low_p90"])
                 stat_high = min(stats["recommend_high"], r["safe_high_p90"])
@@ -598,7 +607,7 @@ border-radius:14px;padding:22px 28px;margin-bottom:12px;">
 <div style="background:#f8f9fa;border-left:5px solid #f39c12;
 border-radius:8px;padding:16px 20px;margin-bottom:12px;">
   <div style="font-size:13px;color:#666;margin-bottom:4px">
-    📊 {best_label} &nbsp;—&nbsp; {filter_desc}{demo_label}
+    📊 {best_label} &nbsp;—&nbsp; {filter_desc}
   </div>
   <div style="font-size:22px;font-weight:700;color:#1f3c88">
     {format_won_exact(best_low)} ~ {format_won_exact(best_high)}
@@ -906,32 +915,42 @@ elif page == "🔍 입찰공고 검색":
         start_str = start_dt.strftime("%Y%m%d") + "000000"
         end_str = end_dt.strftime("%Y%m%d") + "235959"
         with st.spinner("공고 조회 중..."):
+            err_msg = None
+            df = None
             try:
                 df = api.get_bid_list(
                     bid_type=bid_type, keyword=keyword,
                     start_date=start_str, end_date=end_str, rows=rows,
                 )
-                is_demo = False
-                no_result = df.empty
-                if no_result:
-                    df = get_demo_bid_list(bid_type=bid_type, rows=rows)
+                if df.empty:
+                    err_msg = ERR["E-05"]
+                    df = None
+            except ConnectionError as e:
+                msg = str(e)
+                if "429" in msg or "한도" in msg:
+                    err_msg = ERR["E-02"]
+                elif "시간 초과" in msg or "Timeout" in msg:
+                    err_msg = ERR["E-03"]
+                elif "500" in msg or "서버" in msg:
+                    err_msg = ERR["E-04"]
+                elif "401" in msg or "403" in msg or "승인" in msg or "인증" in msg:
+                    err_msg = ERR["E-01"]
+                else:
+                    err_msg = f"{ERR['E-07']} ({msg})"
             except Exception as e:
-                st.error(f"API 오류: {e}")
-                df = get_demo_bid_list(bid_type=bid_type, rows=rows)
-                is_demo = True
-                no_result = False
-        st.session_state["bid_search_result"] = {"df": df, "is_demo": is_demo, "no_result": no_result, "bid_type": bid_type}
+                err_msg = f"{ERR['E-07']} ({e})"
+        st.session_state["bid_search_result"] = {"df": df, "err_msg": err_msg, "bid_type": bid_type}
 
     # 결과 표시 (검색 후 버튼 클릭해도 유지)
     if "bid_search_result" in st.session_state:
         _sr = st.session_state["bid_search_result"]
-        df, is_demo, _stype = _sr["df"], _sr["is_demo"], _sr["bid_type"]
-        no_result = _sr.get("no_result", False)
+        df, _stype = _sr["df"], _sr["bid_type"]
+        err_msg = _sr.get("err_msg")
 
-        if is_demo:
-            st.info("⚠️ API 미연결 상태 — 데모 데이터입니다.")
-        elif no_result:
-            st.warning("검색 결과가 없습니다. 데모 데이터를 표시합니다.")
+        if err_msg:
+            st.warning(err_msg)
+        if df is None:
+            st.stop()
         else:
             st.success(f"총 {len(df)}건 조회됨")
 
@@ -1010,8 +1029,8 @@ elif page == "📊 낙찰 통계 분석":
     if submitted:
         start_str = start_dt.strftime("%Y%m%d") + "000000"
         end_str = end_dt.strftime("%Y%m%d") + "235959"
-        is_demo = False
         with st.spinner("낙찰 데이터 조회 중..."):
+            df = None
             try:
                 df = api.get_winner_list(
                     bid_type=bid_type,
@@ -1021,31 +1040,24 @@ elif page == "📊 낙찰 통계 분석":
                     rows=rows,
                 )
                 if df.empty:
-                    df = get_demo_winner_list(bid_type=bid_type, rows=rows)
-                    is_demo = True
+                    st.warning(ERR["E-05"])
+                    df = None
             except ConnectionError as e:
                 msg = str(e)
-                if "한도 초과" in msg or "429" in msg:
-                    st.warning("⚠️ API 일일 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요.")
-                elif "응답 시간 초과" in msg or "Timeout" in msg:
-                    st.warning("⚠️ API 응답 시간이 초과됐습니다. 네트워크 상태를 확인하거나 잠시 후 재시도하세요.")
+                if "429" in msg or "한도" in msg:
+                    st.warning(ERR["E-02"])
+                elif "시간 초과" in msg or "Timeout" in msg:
+                    st.warning(ERR["E-03"])
                 elif "500" in msg or "서버" in msg:
-                    st.warning("⚠️ 조달청 API 서버 오류입니다. 잠시 후 다시 시도하세요.")
-                elif "승인" in msg or "인증" in msg or "401" in msg or "403" in msg:
-                    st.warning("⚠️ API 키 인증 오류입니다. data.go.kr에서 API 승인 상태를 확인하세요.")
+                    st.warning(ERR["E-04"])
+                elif "401" in msg or "403" in msg or "승인" in msg or "인증" in msg:
+                    st.warning(ERR["E-01"])
                 else:
-                    st.warning(f"⚠️ API 연결 실패: {msg}")
-                df = get_demo_winner_list(bid_type=bid_type, rows=rows)
-                is_demo = True
+                    st.warning(f"{ERR['E-07']} ({msg})")
             except Exception as e:
-                st.error(f"예상치 못한 오류: {e}")
-                df = get_demo_winner_list(bid_type=bid_type, rows=rows)
-                is_demo = True
+                st.warning(f"{ERR['E-07']} ({e})")
 
-        if is_demo:
-            st.info("⚠️ API 미연결 상태 — 데모 데이터를 표시합니다. 낙찰 패턴은 실제 나라장터 통계를 반영합니다.")
-
-        if not df.empty:
+        if df is not None and not df.empty:
             st.success(f"총 {len(df)}건 낙찰 데이터 분석")
 
             # 핵심 통계
@@ -1305,8 +1317,8 @@ elif page == "📁 내 입찰 기록":
                     except Exception:
                         pass
                     if not info:
-                        info = get_demo_bid_by_no(add_bid_no.strip())
-                st.session_state["add_bid_info"] = info
+                        st.warning(ERR["E-06"])
+                st.session_state["add_bid_info"] = info or {}
 
         _add_info = st.session_state.get("add_bid_info", {})
 
