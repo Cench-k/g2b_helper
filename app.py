@@ -874,22 +874,35 @@ border-radius:12px;padding:18px 22px;margin-top:10px;">
             if f"micro_val_{_wkey}" not in st.session_state:
                 st.session_state[f"micro_val_{_wkey}"] = int(optimal["optimal_bid"])
 
-            # 유효 확률 1% 단위 점프 버튼
+            # 유효 확률 셀렉트박스 이동
             _cur_prob = _calc_prob(st.session_state[f"micro_val_{_wkey}"])[1]
             _cur_pct  = int(_cur_prob)
 
-            st.markdown("**유효 확률 구간 바로 이동**")
-            _jump_cols = st.columns(10)
-            _jump_targets = [100, 99, 98, 97, 95, 90, 85, 80, 70, 60]
-            for i, pct in enumerate(_jump_targets):
-                _price_at = _prob_table.get(pct)
-                _label = f"{pct}%"
+            _sc1, _sc2 = st.columns([1, 3])
+            with _sc1:
+                _jump_options = list(range(100, 49, -1))
+                _default_idx  = _jump_options.index(_cur_pct) if _cur_pct in _jump_options else 0
+                _selected_pct = st.selectbox(
+                    "유효 확률 구간 바로 이동",
+                    _jump_options,
+                    index=_default_idx,
+                    format_func=lambda x: f"{x}%",
+                    key=f"jump_sel_{_wkey}",
+                )
+            _price_at = _prob_table.get(_selected_pct)
+            with _sc2:
+                st.write("")
+                st.write("")
                 if _price_at is not None:
-                    if _jump_cols[i].button(_label, key=f"jump_{pct}_{_wkey}", use_container_width=True):
+                    if st.button(
+                        f"→ {_selected_pct}% 구간으로 이동  ({_price_at:,}원)",
+                        key=f"jump_btn_{_wkey}", use_container_width=True, type="secondary",
+                    ):
                         st.session_state[f"micro_val_{_wkey}"] = _price_at
                         st.rerun()
                 else:
-                    _jump_cols[i].button(_label, disabled=True, key=f"jump_{pct}_{_wkey}", use_container_width=True)
+                    st.button(f"→ {_selected_pct}% 구간 없음", disabled=True,
+                              key=f"jump_btn_{_wkey}", use_container_width=True)
 
             c_micro1, c_micro2 = st.columns([1, 2])
             with c_micro1:
