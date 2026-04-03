@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from api.g2b_api import G2BAPI
 from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, format_won_exact, calc_optimal_bid, estimate_competitor_count
+from analysis.demo_data import get_demo_winner_list
 # 에러 코드 정의
 ERR = {
     "E-01": "[E-01] API 키 인증 오류입니다. data.go.kr에서 서비스 승인 상태를 확인하세요.",
@@ -499,6 +500,7 @@ if page == "💰 낙찰 예상가 계산기":
                     industry      = loaded.get("업종", "") if loaded else ""
 
                     winner_df = pd.DataFrame()
+                    _winner_is_demo = False
                     try:
                         _w_start = (datetime.now() - timedelta(days=180)).strftime("%Y%m%d") + "000000"
                         _w_end   = datetime.now().strftime("%Y%m%d") + "235959"
@@ -511,6 +513,9 @@ if page == "💰 낙찰 예상가 계산기":
                         )
                     except Exception:
                         pass
+                    if winner_df.empty:
+                        winner_df = get_demo_winner_list(bid_type=bid_type, rows=200)
+                        _winner_is_demo = True
 
                     # 단계적 필터링 (지역·업종 포함)
                     winner_df, filter_desc = tiered_filter(
@@ -522,8 +527,9 @@ if page == "💰 낙찰 예상가 계산기":
                         industry=industry,
                     )
 
-                    result["stats_keyword"]   = keyword
+                    result["stats_keyword"]    = keyword
                     result["stats_filter_desc"] = filter_desc
+                    result["stats_is_demo"]    = _winner_is_demo
                     result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"], base_price=base_price_input)
                     # 과거 데이터 기반 경쟁사 수 추정
                     result["estimated_comp"] = estimate_competitor_count(winner_df)
@@ -634,6 +640,8 @@ border-radius:14px;padding:22px 28px;margin-bottom:12px;">
 </div>""", unsafe_allow_html=True)
 
             # ── 과거 통계 반영 추천가 ────────────────────────────────────
+            if r.get("stats_is_demo"):
+                st.warning("⚠️ 낙찰결과 API 데이터를 가져오지 못해 **데모 데이터** 기반 통계를 표시합니다. 참고용으로만 활용하세요.")
             if stats:
                 filter_desc   = r.get("stats_filter_desc", "")
                 # 안전구간과 과거통계 추천가의 교집합
