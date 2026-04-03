@@ -7,8 +7,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import API_KEY
 
 # ── 확인된 정확한 엔드포인트 ──────────────────────────────────────────────
-BID_BASE   = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService"   # 입찰공고
-SCSBID_BASE = "https://apis.data.go.kr/1230000/as/ScsbidInfoService"     # 낙찰결과
+BID_BASE    = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService"   # 입찰공고
+SCSBID_BASE = "https://apis.data.go.kr/1230000/as/ScsbidInfoService"      # 낙찰결과
+BSS_BASE    = "https://apis.data.go.kr/1230000/ad/BssAmtOpengInfoService" # 기초금액공개
 
 BID_OPS = {
     "용역": "getBidPblancListInfoServcPPSSrch",
@@ -19,6 +20,11 @@ WIN_OPS = {
     "용역": "getOpengResultListInfoServcPPSSrch",
     "물품": "getOpengResultListInfoThngPPSSrch",
     "공사": "getOpengResultListInfoCnstwkPPSSrch",
+}
+BSS_OPS = {
+    "용역": "getBssAmtOpengListInfoServcPPSSrch",
+    "물품": "getBssAmtOpengListInfoThngPPSSrch",
+    "공사": "getBssAmtOpengListInfoCnstwkPPSSrch",
 }
 
 
@@ -178,9 +184,42 @@ class G2BAPI:
                         for item in self._items(data):
                             no = item.get("bidNtceNo", "")
                             if no == bid_no_clean or no == bid_no:
-                                return self._parse_bid_detail(item, bid_type)
+                                result = self._parse_bid_detail(item, bid_type)
+                                # 기초금액공개 API로 정확한 기초금액 덮어쓰기
+                                bss = self._get_bss_amt(bid_no_clean, bid_type)
+                                if bss:
+                                    result["기초금액"] = bss
+                                return result
                     except Exception:
                         continue
+        return None
+
+    def _get_bss_amt(self, bid_no: str, bid_type: str) -> float | None:
+        """기초금액공개정보서비스에서 정확한 기초금액 조회"""
+        now = datetime.now()
+        for days_back in [30, 90, 180]:
+            start = _fmt_bid(now - timedelta(days=days_back))
+            end   = _fmt_bid(now)
+            url   = f"{BSS_BASE}/{BSS_OPS.get(bid_type, BSS_OPS['용역'])}"
+            try:
+                data = self._get(url, {
+                    "numOfRows": 100, "pageNo": 1,
+                    "inqryDiv": "1",
+                    "inqryBgnDt": start + "0000",
+                    "inqryEndDt": end   + "2359",
+                    "bidNtceNo": bid_no,
+                })
+                for item in self._items(data):
+                    if item.get("bidNtceNo", "").startswith(bid_no):
+                        v = item.get("bssAmt") or item.get("bidBasicAmt")
+                        try:
+                            amt = float(v)
+                            if amt > 0:
+                                return amt
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         return None
 
     def _parse_bid_detail(self, item: dict, bid_type: str) -> dict:
