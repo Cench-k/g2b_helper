@@ -41,6 +41,8 @@ def simulate_expected_price(
     else:
         _weights = None
 
+    slot_counts = np.zeros(candidate_count, dtype=int)
+
     for _ in range(simulations):
         # 층화 추출: 전체 범위를 candidate_count개 구간으로 나누고 각 구간에서 1개씩 난수 생성
         # → 15개가 전체 범위에 고르게 분포 (쏠림 방지, 실제 G2B 방식)
@@ -49,11 +51,17 @@ def simulate_expected_price(
             low + (np.arange(candidate_count) + offsets) * interval
         ).astype(np.int64)
         if _weights is not None:
-            chosen = rng.choice(candidates, size=draw, replace=False, p=_weights)
+            chosen_idx = rng.choice(candidate_count, size=draw, replace=False, p=_weights)
         else:
-            chosen = rng.choice(candidates, size=draw, replace=False)
-        results.append(math.floor(chosen.mean()))  # 나라장터: 예정가격 소수점 버림(절사)
+            chosen_idx = rng.choice(candidate_count, size=draw, replace=False)
+        slot_counts[chosen_idx] += 1
+        results.append(math.floor(candidates[chosen_idx].mean()))  # 나라장터: 예정가격 소수점 버림(절사)
     arr = np.array(results)
+    # 슬롯별 가격 범위 (확정적 경계값)
+    slot_ranges = [
+        (int(low + i * interval), int(low + (i + 1) * interval))
+        for i in range(candidate_count)
+    ]
     return {
         "mean": float(arr.mean()),
         "median": float(np.median(arr)),
@@ -64,6 +72,8 @@ def simulate_expected_price(
         "p75": float(np.percentile(arr, 75)),
         "p90": float(np.percentile(arr, 90)),
         "distribution": arr.tolist(),
+        "slot_counts": slot_counts.tolist(),
+        "slot_ranges": slot_ranges,
     }
 
 
@@ -183,8 +193,13 @@ def calc_bid_range(
         # A값 / 예비가격 범위
         "a_value": a_value,
         "price_range": price_range,
+        "candidate_count": candidate_count,
+        "draw_count": draw_count,
         # 분포 데이터
         "distribution": sim["distribution"],
+        # 슬롯 선택 빈도 (15개 예비가격 번호별)
+        "slot_counts": sim["slot_counts"],
+        "slot_ranges": sim["slot_ranges"],
     }
 
 
@@ -262,11 +277,29 @@ def apply_time_weight(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def filter_by_region(df: pd.DataFrame, region: str) -> pd.DataFrame:
+    """참가제한지역 필터"""
+    if df.empty or not region or "참가제한지역" not in df.columns:
+        return df
+    filtered = df[df["참가제한지역"].str.contains(region, na=False)]
+    return filtered if len(filtered) >= 5 else df
+
+
+def filter_by_industry(df: pd.DataFrame, industry: str) -> pd.DataFrame:
+    """업종 필터 (대소문자 무관)"""
+    if df.empty or not industry or "업종" not in df.columns:
+        return df
+    filtered = df[df["업종"].str.contains(industry, na=False, case=False)]
+    return filtered if len(filtered) >= 5 else df
+
+
 def tiered_filter(
     df: pd.DataFrame,
     base_price: float,
     agency: str = "",
     contract_type: str = "",
+    region: str = "",
+    industry: str = "",
 ) -> tuple[pd.DataFrame, str]:
     """
     단계적 필터링 — 엄격한 조건부터 시작해 데이터 부족 시 자동 완화
@@ -274,33 +307,48 @@ def tiered_filter(
     """
     MIN_SAMPLES = 15
 
+    # 지역/업종 사전 필터 (데이터 충분할 때만 적용)
+    base_df = df
+    pre_filters = []
+    if region:
+        _r = filter_by_region(df, region)
+        if len(_r) >= MIN_SAMPLES:
+            base_df = _r
+            pre_filters.append(f"지역:{region}")
+    if industry:
+        _i = filter_by_industry(base_df, industry)
+        if len(_i) >= MIN_SAMPLES:
+            base_df = _i
+            pre_filters.append(f"업종:{industry}")
+    pre_label = ("·" + "·".join(pre_filters)) if pre_filters else ""
+
     # 1단계: 기관 + 계약방식 + 금액 좁게 (±1/3~3배)
     if agency and contract_type:
-        t = filter_by_agency(df, agency)
+        t = filter_by_agency(base_df, agency)
         t = filter_by_contract_type(t, contract_type)
         t = filter_by_amount_log(t, base_price, half_decade=0.3)
         if len(t) >= MIN_SAMPLES:
-            return apply_time_weight(t), f"1단계: 동일기관·{contract_type}·유사금액 {len(t)}건"
+            return apply_time_weight(t), f"1단계: 동일기관·{contract_type}·유사금액{pre_label} {len(t)}건"
 
     # 2단계: 계약방식 + 금액 (±1/3~3배)
     if contract_type:
-        t = filter_by_contract_type(df, contract_type)
+        t = filter_by_contract_type(base_df, contract_type)
         t = filter_by_amount_log(t, base_price, half_decade=0.3)
         if len(t) >= MIN_SAMPLES:
-            return apply_time_weight(t), f"2단계: {contract_type}·유사금액 {len(t)}건"
+            return apply_time_weight(t), f"2단계: {contract_type}·유사금액{pre_label} {len(t)}건"
 
     # 3단계: 금액만 좁게
-    t = filter_by_amount_log(df, base_price, half_decade=0.3)
+    t = filter_by_amount_log(base_df, base_price, half_decade=0.3)
     if len(t) >= MIN_SAMPLES:
-        return apply_time_weight(t), f"3단계: 유사금액(±1/3배) {len(t)}건"
+        return apply_time_weight(t), f"3단계: 유사금액(±1/3배){pre_label} {len(t)}건"
 
     # 4단계: 금액 넓게 (±3~10배)
-    t = filter_by_amount_log(df, base_price, half_decade=0.5)
+    t = filter_by_amount_log(base_df, base_price, half_decade=0.5)
     if len(t) >= MIN_SAMPLES:
-        return apply_time_weight(t), f"4단계: 유사금액(±3배) {len(t)}건"
+        return apply_time_weight(t), f"4단계: 유사금액(±3배){pre_label} {len(t)}건"
 
     # 5단계: 전체 사용
-    return apply_time_weight(df), f"5단계: 전체 {len(df)}건 (금액 필터 없음)"
+    return apply_time_weight(base_df), f"5단계: 전체 {len(base_df)}건{pre_label} (금액 필터 없음)"
 
 
 def recommend_from_stats(winner_df: pd.DataFrame, expected_price_mean: float, base_price: float | None = None) -> dict | None:

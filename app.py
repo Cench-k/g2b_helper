@@ -460,11 +460,13 @@ if page == "💰 낙찰 예상가 계산기":
                         use_psychology_weight=use_psych_weight,
                     )
 
-                    # 공고번호 로드된 경우 → 기관·계약방식·키워드 추출
+                    # 공고번호 로드된 경우 → 기관·계약방식·키워드·지역·업종 추출
                     loaded = st.session_state.get("apply_bid", {})
-                    keyword      = extract_keyword(loaded.get("공고명", "")) if loaded else ""
-                    agency       = loaded.get("공고기관", "") if loaded else ""
+                    keyword       = extract_keyword(loaded.get("공고명", "")) if loaded else ""
+                    agency        = loaded.get("공고기관", "") if loaded else ""
                     contract_type = loaded.get("계약방식", "") if loaded else ""
+                    region        = loaded.get("참가제한지역", "") if loaded else ""
+                    industry      = loaded.get("업종", "") if loaded else ""
 
                     winner_df = pd.DataFrame()
                     try:
@@ -480,12 +482,14 @@ if page == "💰 낙찰 예상가 계산기":
                     except Exception:
                         pass
 
-                    # 단계적 필터링
+                    # 단계적 필터링 (지역·업종 포함)
                     winner_df, filter_desc = tiered_filter(
                         winner_df,
                         base_price=base_price_input,
                         agency=agency,
                         contract_type=contract_type,
+                        region=region,
+                        industry=industry,
                     )
 
                     result["stats_keyword"]   = keyword
@@ -877,6 +881,52 @@ border-radius:8px;padding:14px 18px;margin-top:8px;">
                     _micro_df.style.apply(_highlight_cur, axis=1),
                     use_container_width=True, hide_index=True,
                 )
+
+            # ── 예비가격 슬롯별 선택 빈도 표 ───────────────────────────────
+            if r.get("slot_counts") and r.get("slot_ranges"):
+                st.markdown("---")
+                st.subheader("🎲 예비가격 번호별 선택 빈도")
+                _n_slots = len(r["slot_counts"])
+                st.caption(
+                    f"10,000회 시뮬레이션에서 {_n_slots}개 예비가격 후보 중 "
+                    f"각 번호가 최종 추첨(상위 {r.get('draw_count', 4)}개 평균)에 뽑힌 횟수입니다. "
+                    "많이 뽑힌 번호일수록 예정가격에 영향이 큽니다."
+                )
+                _total_draws = sum(r["slot_counts"])
+                _slot_rows = []
+                for _i, (_cnt, (_lo, _hi)) in enumerate(zip(r["slot_counts"], r["slot_ranges"])):
+                    _mid = (_lo + _hi) // 2
+                    _pct = _cnt / _total_draws * 100
+                    _slot_rows.append({
+                        "번호": _i + 1,
+                        "예비가격 범위": f"{_lo:,} ~ {_hi:,}",
+                        "사정률 범위": f"{_lo/r['base_price']*100:.2f}% ~ {_hi/r['base_price']*100:.2f}%",
+                        "선택 횟수": _cnt,
+                        "선택 비율": round(_pct, 1),
+                    })
+                _slot_df = pd.DataFrame(_slot_rows)
+                # 선택 비율 기준 내림차순 정렬해서 상위 강조
+                _slot_df_sorted = _slot_df.sort_values("선택 비율", ascending=False).reset_index(drop=True)
+                _max_pct = _slot_df_sorted["선택 비율"].iloc[0]
+
+                def _highlight_slot(row):
+                    if row["선택 비율"] == _max_pct:
+                        return ["background-color:#ffd700;font-weight:bold;color:#000"] * len(row)
+                    elif row["선택 비율"] >= _max_pct * 0.9:
+                        return ["background-color:#fff3cd;color:#000"] * len(row)
+                    return [""] * len(row)
+
+                tab_slot1, tab_slot2 = st.tabs(["비율 높은 순", "번호 순"])
+                with tab_slot1:
+                    st.dataframe(
+                        _slot_df_sorted.style.apply(_highlight_slot, axis=1),
+                        use_container_width=True, hide_index=True,
+                    )
+                with tab_slot2:
+                    st.dataframe(
+                        _slot_df.style.apply(_highlight_slot, axis=1),
+                        use_container_width=True, hide_index=True,
+                    )
 
         else:
             st.info("왼쪽에서 기초금액을 입력하고 '계산하기' 버튼을 누르세요.")

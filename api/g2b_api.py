@@ -202,22 +202,29 @@ class G2BAPI:
         # 복수예가 후보 수 / 추첨 수 (공고마다 다를 수 있음, 기본 15개/2개)
         total_prd = int(item.get("totPrdprcNum") or 15)
         draw_prd  = int(item.get("drwtPrdprcNum") or 4)
+        region = (item.get("prtcptLmtRgnNm") or item.get("ntceInsttRgnNm") or "").strip()
+        industry = (
+            item.get("srvceDivNm") or item.get("mainCnstwkBsns") or
+            item.get("prdctClsfcNm") or item.get("indstrytyClsfNm") or ""
+        ).strip()
         return {
-            "공고번호":   item.get("bidNtceNo", ""),
-            "공고명":    item.get("bidNtceNm", ""),
-            "공고기관":  item.get("ntceInsttNm", ""),
-            "수요기관":  item.get("dminsttNm", ""),
-            "기초금액":  base,
-            "추정금액":  num(item.get("presmptPrce")),
-            "낙찰하한율": num(item.get("sucsfbidLwltRate")),
-            "낙찰방법":  item.get("sucsfbidMthdNm", ""),
-            "계약방식":  item.get("cntrctCnclsMthdNm", ""),
-            "예가방식":  item.get("prearngPrceDcsnMthdNm", ""),
-            "입찰마감일": item.get("bidClseDt", ""),
-            "개찰일시":  item.get("opengDt", ""),
-            "공사종류":  bid_type,
-            "후보수":    total_prd,
-            "추첨수":    draw_prd,
+            "공고번호":     item.get("bidNtceNo", ""),
+            "공고명":      item.get("bidNtceNm", ""),
+            "공고기관":    item.get("ntceInsttNm", ""),
+            "수요기관":    item.get("dminsttNm", ""),
+            "기초금액":    base,
+            "추정금액":    num(item.get("presmptPrce")),
+            "낙찰하한율":   num(item.get("sucsfbidLwltRate")),
+            "낙찰방법":    item.get("sucsfbidMthdNm", ""),
+            "계약방식":    item.get("cntrctCnclsMthdNm", ""),
+            "예가방식":    item.get("prearngPrceDcsnMthdNm", ""),
+            "입찰마감일":   item.get("bidClseDt", ""),
+            "개찰일시":    item.get("opengDt", ""),
+            "공사종류":    bid_type,
+            "후보수":      total_prd,
+            "추첨수":      draw_prd,
+            "참가제한지역": region,
+            "업종":        industry,
         }
 
     # ── 낙찰 결과 조회 (14일 제한 → 자동 분할 호출) ──────────────────────
