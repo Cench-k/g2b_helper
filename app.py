@@ -72,6 +72,8 @@ def check_api_status() -> tuple[bool, str]:
     """API 연결 상태 확인. (성공여부, 에러메시지) 반환"""
     try:
         df = api.get_bid_list(bid_type="용역", rows=1)
+        if df.empty:
+            return False, "API 응답은 받았으나 데이터 없음 (인증키 확인 필요)"
         return True, ""
     except Exception as e:
         return False, str(e)

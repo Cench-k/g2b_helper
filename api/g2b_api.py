@@ -89,8 +89,8 @@ class G2BAPI:
         params = {
             "numOfRows": rows, "pageNo": page,
             "inqryDiv": "1",
-            "inqryBgnDt": start[:8],
-            "inqryEndDt": end[:8],
+            "inqryBgnDt": start[:8] + "0000",
+            "inqryEndDt": end[:8] + "2359",
         }
         if keyword:
             params["bidNtceNm"] = keyword
