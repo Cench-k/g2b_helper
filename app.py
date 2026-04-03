@@ -909,22 +909,27 @@ elif page == "🔍 입찰공고 검색":
                     bid_type=bid_type, keyword=keyword,
                     start_date=start_str, end_date=end_str, rows=rows,
                 )
-                is_demo = df.empty
-                if is_demo:
+                is_demo = False
+                no_result = df.empty
+                if no_result:
                     df = get_demo_bid_list(bid_type=bid_type, rows=rows)
             except Exception as e:
                 st.error(f"API 오류: {e}")
                 df = get_demo_bid_list(bid_type=bid_type, rows=rows)
                 is_demo = True
-        st.session_state["bid_search_result"] = {"df": df, "is_demo": is_demo, "bid_type": bid_type}
+                no_result = False
+        st.session_state["bid_search_result"] = {"df": df, "is_demo": is_demo, "no_result": no_result, "bid_type": bid_type}
 
     # 결과 표시 (검색 후 버튼 클릭해도 유지)
     if "bid_search_result" in st.session_state:
         _sr = st.session_state["bid_search_result"]
         df, is_demo, _stype = _sr["df"], _sr["is_demo"], _sr["bid_type"]
+        no_result = _sr.get("no_result", False)
 
         if is_demo:
             st.info("⚠️ API 미연결 상태 — 데모 데이터입니다.")
+        elif no_result:
+            st.warning("검색 결과가 없습니다. 데모 데이터를 표시합니다.")
         else:
             st.success(f"총 {len(df)}건 조회됨")
 
