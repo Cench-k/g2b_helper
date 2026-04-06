@@ -3,3 +3,8 @@ gatherUsageStats = false
 
 [server]
 headless = true
+maxUploadSize = 200
+# WebSocket 연결 유지 (긴 API 호출 대응)
+
+[client]
+showErrorDetails = true

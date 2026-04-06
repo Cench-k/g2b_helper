@@ -135,11 +135,12 @@ class G2BAPI:
         return df
 
     # ── 공고번호로 상세 조회 ───────────────────────────────────────────────
-    def get_bid_by_no(self, bid_no: str) -> dict | None:
+    def get_bid_by_no(self, bid_no: str, bid_type: str | None = None) -> dict | None:
         """
         최근 90일을 14일씩 구간으로 나눠 페이지네이션으로 전수 탐색.
         bidNtceNo API 파라미터가 서버 필터링 미지원이므로 클라이언트 직접 비교.
         최신 구간부터 검색해 최근 공고는 빠르게 발견.
+        bid_type 지정 시 해당 업종만 검색 (속도 3배 향상).
         """
         now = datetime.now()
         bid_no_clean = bid_no.split("-")[0].strip()
@@ -155,8 +156,11 @@ class G2BAPI:
         ROWS = 500
         MAX_PAGES = 4  # 구간당 앞뒤 각 2페이지 (최신·오래된 공고 모두 대응)
 
+        # bid_type 지정 시 해당 업종만, 아니면 전체 검색
+        ops_to_search = {bid_type: BID_OPS[bid_type]} if bid_type and bid_type in BID_OPS else BID_OPS
+
         for start_str, end_str in windows:
-            for bid_type, op in BID_OPS.items():
+            for bid_type, op in ops_to_search.items():
                 url = f"{BID_BASE}/{op}"
                 base_params = {
                     "numOfRows": ROWS,
@@ -194,14 +198,17 @@ class G2BAPI:
                         continue
         return None
 
-    def _get_bss_amt(self, bid_no: str, bid_type: str) -> float | None:
-        """기초금액공개정보서비스에서 정확한 기초금액 조회
-        - bidNtceNo 파라미터 미지원 API가 많으므로 날짜 범위 검색 후 클라이언트 필터
-        - 30일 → 90일 → 180일 구간 순으로 확장 시도
+    def _get_bss_amt(self, bid_no: str, bid_type: str,
+                    keyword: str = "", region: str = "", presmpt: float = 0) -> float | None:
+        """기초금액 조회 — 3단계 시도
+        1) 기초금액공개정보서비스 (BssAmtOpengInfoService)
+        2) 낙찰결과 API — 동일 공고번호 (이미 개찰된 경우 정확한 bssAmt 존재)
+        3) 낙찰결과 API — 유사 공고(같은 업종·금액대) bssAmt/presmptPrce 비율 추정
         """
         now = datetime.now()
         bid_no_clean = bid_no.split("-")[0].strip()
 
+        # ── 1단계: 기초금액공개 API ───────────────────────────────────────
         for days_back in [30, 90, 180]:
             start = _fmt_bid(now - timedelta(days=days_back))
             end   = _fmt_bid(now)
@@ -216,17 +223,68 @@ class G2BAPI:
                     })
                     for item in self._items(data):
                         no = item.get("bidNtceNo", "")
-                        if no == bid_no_clean or no == bid_no or no.startswith(bid_no_clean):
+                        if no == bid_no_clean or no == bid_no:
                             for field in ("bssAmt", "bidBasicAmt", "opengBssAmt"):
-                                v = item.get(field)
                                 try:
-                                    amt = float(v)
+                                    amt = float(item.get(field) or 0)
                                     if amt > 0:
                                         return amt
                                 except Exception:
                                     pass
                 except Exception:
                     continue
+
+        # ── 2단계: 낙찰결과 API — 동일 공고번호 ──────────────────────────
+        w_start = _fmt_win(now - timedelta(days=180))
+        w_end   = _fmt_win(now)
+        for btype in ([bid_type] + [t for t in WIN_OPS if t != bid_type]):
+            url = f"{SCSBID_BASE}/{WIN_OPS[btype]}"
+            try:
+                data = self._get(url, {
+                    "numOfRows": 100, "pageNo": 1,
+                    "inqryDiv": "2",
+                    "inqryBgnDt": w_start,
+                    "inqryEndDt": w_end,
+                })
+                for item in self._items(data):
+                    no = item.get("bidNtceNo", "")
+                    if no == bid_no_clean or no == bid_no:
+                        try:
+                            amt = float(item.get("bssAmt") or 0)
+                            if amt > 0:
+                                return amt
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+
+        # ── 3단계: 낙찰결과 유사 공고 bssAmt/presmptPrce 비율 추정 ────────
+        if presmpt and presmpt > 0:
+            try:
+                similar_df = self.get_winner_list(
+                    bid_type=bid_type,
+                    keyword=keyword[:6] if keyword else "",
+                    start_date=_fmt_win(now - timedelta(days=180)),
+                    end_date=_fmt_win(now),
+                    rows=200,
+                )
+                if not similar_df.empty and "기초금액" in similar_df.columns and "예정가격" in similar_df.columns:
+                    mask = (
+                        similar_df["기초금액"].notna() & (similar_df["기초금액"] > 0) &
+                        similar_df["예정가격"].notna() & (similar_df["예정가격"] > 0)
+                    )
+                    sub = similar_df[mask]
+                    # 금액대 필터: presmpt 기준 ±3배
+                    sub = sub[(sub["기초금액"] >= presmpt / 3) & (sub["기초금액"] <= presmpt * 3)]
+                    if len(sub) >= 5:
+                        # 기초금액/예정가격 비율 중앙값으로 현재 추정가격에서 기초금액 역산
+                        ratio = (sub["기초금액"] / sub["예정가격"]).median()
+                        estimated = round(presmpt * ratio)
+                        if estimated > 0:
+                            return estimated
+            except Exception:
+                pass
+
         return None
 
     def _parse_bid_detail(self, item: dict, bid_type: str) -> dict:

@@ -1118,18 +1118,12 @@ elif page == "🔍 입찰공고 검색":
             row = df.iloc[selected_idx]
             bid_no = str(row.get("공고번호", ""))
             _agency = str(row.get("공고기관", ""))
-            # 기초금액 정확도를 위해 공고 상세 API 우선 호출
-            with st.spinner("공고 상세 조회 중..."):
-                detail = None
-                try:
-                    detail = api.get_bid_by_no(bid_no)
-                except Exception:
-                    pass
-            if detail and detail.get("기초금액"):
-                info = detail
-                info.setdefault("예가범위_라벨", guess_price_range_label(_agency))
-            else:
-                # 상세 조회 실패 시 목록 데이터로 fallback
+
+            # 1단계: Supabase 캐시 확인 (API 호출 없이 즉시)
+            info = cache_get_bid(bid_no)
+
+            if not info:
+                # 2단계: 목록 데이터로 즉시 구성 (기초금액은 추정값)
                 _presmpt = float(row.get("추정금액") or 0)
                 base = round(_presmpt * 1.1) if _presmpt > 0 else None
                 info = {
@@ -1144,7 +1138,18 @@ elif page == "🔍 입찰공고 검색":
                     "후보수": 15, "추첨수": 4,
                     "예가범위_라벨": guess_price_range_label(_agency),
                 }
-            cache_save_bid(bid_no, info)
+
+                # 3단계: 기초금액 정확도를 위해 상세 API 조회 (알고 있는 업종만 검색)
+                with st.spinner("공고 상세 조회 중... (기초금액 확인)"):
+                    try:
+                        detail = api.get_bid_by_no(bid_no, bid_type=_stype)
+                        if detail and detail.get("기초금액"):
+                            info.update({k: v for k, v in detail.items() if v is not None})
+                    except Exception:
+                        pass
+
+                info.setdefault("예가범위_라벨", guess_price_range_label(_agency))
+                cache_save_bid(bid_no, info)
             st.session_state["apply_bid"] = info
             st.session_state["loaded_bid"] = info
             st.session_state["nav_to"] = "💰 낙찰 예상가 계산기"
