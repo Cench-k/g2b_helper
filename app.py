@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
+import traceback as _tb
+import sys as _sys
 from datetime import datetime, timedelta
 
 from api.g2b_api import G2BAPI
@@ -1115,6 +1117,7 @@ elif page == "🔍 입찰공고 검색":
                                     format_func=lambda i: bid_names[i],
                                     label_visibility="collapsed")
         if st.button("📊 이 공고로 계산기 적용", type="primary"):
+          try:
             row = df.iloc[selected_idx]
             bid_no = str(row.get("공고번호", ""))
             _agency = str(row.get("공고기관", ""))
@@ -1154,6 +1157,9 @@ elif page == "🔍 입찰공고 검색":
             st.session_state["loaded_bid"] = info
             st.session_state["nav_to"] = "💰 낙찰 예상가 계산기"
             st.rerun()
+          except Exception as _e:
+            st.error(f"오류 발생: {_e}")
+            st.code(_tb.format_exc())
 
         st.markdown("---")
         display_df = df.copy()
