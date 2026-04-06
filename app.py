@@ -1117,49 +1117,72 @@ elif page == "🔍 입찰공고 검색":
                                     format_func=lambda i: bid_names[i],
                                     label_visibility="collapsed")
         if st.button("📊 이 공고로 계산기 적용", type="primary"):
-          try:
             row = df.iloc[selected_idx]
             bid_no = str(row.get("공고번호", ""))
             _agency = str(row.get("공고기관", ""))
 
-            # 1단계: Supabase 캐시 확인 (API 호출 없이 즉시)
+            # 1단계: Supabase 캐시 확인
             info = cache_get_bid(bid_no)
 
             if not info:
-                # 2단계: 목록 데이터로 즉시 구성 (기초금액은 추정값)
+                # 2단계: 검색 결과 row에서 직접 추출 (API 재호출 없음 → 즉시)
                 _presmpt = float(row.get("추정금액") or 0)
-                base = round(_presmpt * 1.1) if _presmpt > 0 else None
-                info = {
-                    "공고번호":  bid_no,
-                    "공고명":   str(row.get("공고명", "")),
-                    "공고기관": _agency,
-                    "기초금액": base,
-                    "낙찰하한율": float(row.get("낙찰하한율") or 0) or None,
-                    "계약방식": str(row.get("계약방식", "")),
-                    "개찰일시": str(row.get("개찰일시", "")),
-                    "공사종류": _stype,
-                    "후보수": 15, "추첨수": 4,
-                    "예가범위_라벨": guess_price_range_label(_agency),
-                }
-
-                # 3단계: 기초금액 정확도를 위해 상세 API 조회 (알고 있는 업종만 검색)
-                with st.spinner("공고 상세 조회 중... (기초금액 확인)"):
+                # 기초금액: VAT 필드가 있으면 추정금액+VAT, 없으면 ×1.1
+                _vat = 0.0
+                for _vf in ["VAT", "indutyVAT"]:
                     try:
-                        detail = api.get_bid_by_no(bid_no, bid_type=_stype)
-                        if detail and detail.get("기초금액"):
-                            info.update({k: v for k, v in detail.items() if v is not None})
+                        _v = float(row.get(_vf) or 0)
+                        if _v > 0:
+                            _vat = _v
+                            break
                     except Exception:
                         pass
+                if _vat > 0:
+                    base = round(_presmpt + _vat) if _presmpt > 0 else None
+                else:
+                    base = round(_presmpt * 1.1) if _presmpt > 0 else None
 
-                info.setdefault("예가범위_라벨", guess_price_range_label(_agency))
+                # 후보수/추첨수: 목록 row에 있으면 사용, 없으면 기본값
+                try:
+                    _cand = int(row.get("totPrdprcNum") or 0) or 15
+                except Exception:
+                    _cand = 15
+                try:
+                    _draw = int(row.get("drwtPrdprcNum") or 0) or 4
+                except Exception:
+                    _draw = 4
+
+                # 참가제한지역 / 업종
+                _region = str(
+                    row.get("prtcptLmtRgnNm") or
+                    row.get("ntceInsttRgnNm") or ""
+                ).strip()
+                _industry = str(
+                    row.get("srvceDivNm") or row.get("용역구분") or
+                    row.get("mainCnstwkBsns") or row.get("prdctClsfcNm") or ""
+                ).strip()
+
+                info = {
+                    "공고번호":      bid_no,
+                    "공고명":       str(row.get("공고명", "")),
+                    "공고기관":     _agency,
+                    "기초금액":     base,
+                    "낙찰하한율":    float(row.get("낙찰하한율") or 0) or None,
+                    "계약방식":     str(row.get("계약방식", "")),
+                    "개찰일시":     str(row.get("개찰일시", "")),
+                    "공사종류":     _stype,
+                    "후보수":       _cand,
+                    "추첨수":       _draw,
+                    "참가제한지역":  _region,
+                    "업종":         _industry,
+                    "예가범위_라벨": guess_price_range_label(_agency),
+                }
                 cache_save_bid(bid_no, info)
+
             st.session_state["apply_bid"] = info
             st.session_state["loaded_bid"] = info
             st.session_state["nav_to"] = "💰 낙찰 예상가 계산기"
             st.rerun()
-          except Exception as _e:
-            st.error(f"오류 발생: {_e}")
-            st.code(_tb.format_exc())
 
         st.markdown("---")
         display_df = df.copy()
