@@ -1399,7 +1399,7 @@ elif page == "🔍 입찰공고 검색":
         with col1:
             keyword = st.text_input("공고명 검색어", placeholder="예: 소프트웨어 개발")
         with col2:
-            bid_type = st.selectbox("공사 종류", ["용역", "물품", "공사"])
+            bid_type = st.selectbox("공사 종류", ["공사", "물품", "용역"])
         with col3:
             rows = st.selectbox("조회 건수", [10, 20, 50, 100], index=1)
 
