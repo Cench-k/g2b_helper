@@ -278,19 +278,38 @@ def apply_time_weight(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_by_region(df: pd.DataFrame, region: str) -> pd.DataFrame:
-    """참가제한지역 필터"""
+    """참가제한지역 필터 — 정확 일치 우선, 없으면 포함 매칭"""
     if df.empty or not region or "참가제한지역" not in df.columns:
         return df
-    filtered = df[df["참가제한지역"].str.contains(region, na=False)]
-    return filtered if len(filtered) >= 5 else df
+    # 1순위: 정확 일치 (예: "제주특별자치도" == "제주특별자치도")
+    exact = df[df["참가제한지역"] == region]
+    if len(exact) >= 5:
+        return exact
+    # 2순위: 앞 2자 포함 (예: "제주" in "제주특별자치도")
+    short = region[:2]
+    partial = df[df["참가제한지역"].str.contains(short, na=False)]
+    return partial if len(partial) >= 5 else df
 
 
-def filter_by_industry(df: pd.DataFrame, industry: str) -> pd.DataFrame:
-    """업종 필터 (대소문자 무관)"""
-    if df.empty or not industry or "업종" not in df.columns:
+def filter_by_industry(df: pd.DataFrame, industry: str, industry_cd: str = "") -> pd.DataFrame:
+    """업종 필터 — 코드 정확 매칭 우선, 없으면 업종명 포함 매칭"""
+    if df.empty or not industry:
         return df
-    filtered = df[df["업종"].str.contains(industry, na=False, case=False)]
-    return filtered if len(filtered) >= 5 else df
+    # 1순위: 업종코드 정확 일치
+    if industry_cd and "업종코드" in df.columns:
+        filtered = df[df["업종코드"] == industry_cd]
+        if len(filtered) >= 5:
+            return filtered
+    # 2순위: 업종명 정확 일치
+    if "업종" in df.columns:
+        filtered = df[df["업종"] == industry]
+        if len(filtered) >= 5:
+            return filtered
+        # 3순위: 업종명 포함 매칭 (부분 일치)
+        filtered = df[df["업종"].str.contains(industry, na=False, case=False)]
+        if len(filtered) >= 5:
+            return filtered
+    return df
 
 
 def tiered_filter(
@@ -300,6 +319,7 @@ def tiered_filter(
     contract_type: str = "",
     region: str = "",
     industry: str = "",
+    industry_cd: str = "",
 ) -> tuple[pd.DataFrame, str]:
     """
     단계적 필터링 — 엄격한 조건부터 시작해 데이터 부족 시 자동 완화
@@ -316,7 +336,7 @@ def tiered_filter(
             base_df = _r
             pre_filters.append(f"지역:{region}")
     if industry:
-        _i = filter_by_industry(base_df, industry)
+        _i = filter_by_industry(base_df, industry, industry_cd)
         if len(_i) >= MIN_SAMPLES:
             base_df = _i
             pre_filters.append(f"업종:{industry}")

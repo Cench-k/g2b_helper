@@ -3,12 +3,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
-import traceback as _tb
-import sys as _sys
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 from api.g2b_api import G2BAPI
-from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, format_won, format_won_exact, calc_optimal_bid, estimate_competitor_count
+from analysis.bid_analyzer import calc_bid_range, analyze_winner_stats, recommend_from_stats, extract_keyword, tiered_filter, filter_by_region, filter_by_industry, format_won, format_won_exact, calc_optimal_bid, estimate_competitor_count
 from analysis.demo_data import get_demo_winner_list
 # 에러 코드 정의
 ERR = {
@@ -79,6 +78,283 @@ def guess_price_range_label(agency: str) -> str:
     if any(k in a for k in ["방위사업청", "국방부", "육군", "해군", "공군", "국군", "병무청"]):
         return "직접 입력 (방위사업청·군 시설 등)"
     return "국가기관·조달청 (-2% ~ +2%)"
+
+def build_recent_cards(
+    bid_type: str,
+    region: str,
+    industry_cd: str,
+    base_price: float,
+    contract_type: str = "",
+    before_date: str = "",
+) -> list:
+    """동일 업종·지역 낙찰 사례 카드 (최대 6개). before_date 이전 개찰건만."""
+    _recent5 = []
+    if not region:
+        return _recent5
+
+    now = datetime.now()
+    # before_date가 있으면 그 시점 이전까지만 조회
+    if before_date:
+        try:
+            _end_dt = pd.to_datetime(before_date)
+            _w_end = _end_dt.strftime("%Y%m%d%H%M")
+        except Exception:
+            _w_end = (now + timedelta(days=1)).strftime("%Y%m%d") + "0000"
+    else:
+        _w_end = (now + timedelta(days=1)).strftime("%Y%m%d") + "0000"
+
+    _r5_df = pd.DataFrame()
+    try:
+        _anchor = pd.to_datetime(before_date) if before_date else now
+    except Exception:
+        _anchor = now
+    # 1차: 업종+지역 필터 유지하고 기간만 넓힘
+    for _days in [7, 14, 30, 90, 180, 365]:
+        _r5_start = (_anchor - timedelta(days=_days)).strftime("%Y%m%d") + "000000"
+        try:
+            _df_tmp = api.get_winner_list(
+                bid_type=bid_type,
+                start_date=_r5_start, end_date=_w_end, rows=50,
+                prtcpt_lmt_rgn_nm=region,
+                indstryty_cd=industry_cd,
+            )
+            if not _df_tmp.empty and _df_tmp["낙찰금액"].dropna().shape[0] >= 3:
+                _r5_df = _df_tmp
+                break
+        except Exception:
+            continue
+    # 2차(최후): 365일 내에서도 3건 미만이면 업종 필터만 제거 (지역은 유지)
+    if _r5_df.empty and industry_cd:
+        _r5_start = (_anchor - timedelta(days=365)).strftime("%Y%m%d") + "000000"
+        try:
+            _df_tmp = api.get_winner_list(
+                bid_type=bid_type,
+                start_date=_r5_start, end_date=_w_end, rows=50,
+                prtcpt_lmt_rgn_nm=region,
+                indstryty_cd="",
+            )
+            if not _df_tmp.empty:
+                _r5_df = _df_tmp
+        except Exception:
+            pass
+
+    if _r5_df.empty or "개찰일시" not in _r5_df.columns:
+        return _recent5
+
+    # 업종코드 기반 정밀 필터 (LICENSE API)
+    if industry_cd:
+        try:
+            _target_bids = set(_r5_df["공고번호"].apply(lambda x: str(x).split("-")[0].strip()))
+            _lic_start = (_anchor - timedelta(days=_days + 7)).strftime("%Y%m%d") + "0000"
+            _lic_end   = _anchor.strftime("%Y%m%d%H%M")
+            _lic_map   = api.get_license_code_map(
+                _lic_start, _lic_end, bsns_div=bid_type,
+                target_bid_nos=_target_bids,
+            )
+            if _lic_map:
+                _r5_df = _r5_df[_r5_df["공고번호"].apply(
+                    lambda bn: industry_cd in _lic_map.get(str(bn).split("-")[0].strip(), set())
+                )]
+        except Exception:
+            pass
+
+    if _r5_df.empty:
+        return _recent5
+
+    _sorted = _r5_df.dropna(subset=["낙찰금액"]).copy()
+    _sorted["_dt"] = pd.to_datetime(_sorted["개찰일시"], errors="coerce")
+    _sorted = _sorted.dropna(subset=["_dt"]).sort_values("_dt", ascending=False)
+
+    # 계약방식 필터
+    if contract_type and "계약방식" in _sorted.columns:
+        _is_suui = "수의" in contract_type
+        _ct_mask = _sorted["계약방식"].str.contains("수의", na=False) == _is_suui
+        _ct_filtered = _sorted[_ct_mask]
+        if len(_ct_filtered) >= 1:
+            _sorted = _ct_filtered
+
+    # 비슷한 금액대 필터
+    _amt_col = "기초금액" if "기초금액" in _sorted.columns else "낙찰금액"
+    _price_filtered = _sorted
+    for _ratio in [0.5, 1.0]:
+        _lo, _hi = base_price * (1 - _ratio), base_price * (1 + _ratio)
+        _tmp = _sorted[
+            _sorted[_amt_col].notna() &
+            (_sorted[_amt_col] >= _lo) &
+            (_sorted[_amt_col] <= _hi)
+        ]
+        if len(_tmp) >= 3:
+            _price_filtered = _tmp
+            break
+
+    _N_SIM, _N_CAND = 5000, 15
+
+    def _build_one(_row):
+        _lr      = _row.get("낙찰률")
+        _award   = _row.get("낙찰금액")
+        _base    = _row.get("기초금액")
+        _agency  = str(_row.get("공고기관") or _row.get("수요기관") or "")
+        _bid_no_card = str(_row.get("공고번호", ""))
+
+        _award_f = float(_award) if pd.notna(_award) else None
+        _base_f  = float(_base)  if pd.notna(_base)  else None
+
+        # 카드 공고별 API 3개 병렬 호출
+        _detail = None; _pd = None; _compt = []
+        if _bid_no_card:
+            with ThreadPoolExecutor(max_workers=3) as _ex:
+                _f1 = _ex.submit(api.get_bid_by_no, _bid_no_card, bid_type)
+                _f2 = _ex.submit(api.get_price_detail, _bid_no_card, bid_type)
+                _f3 = _ex.submit(api.get_openg_compt, _bid_no_card)
+                try: _detail = _f1.result()
+                except Exception: pass
+                try: _pd = _f2.result()
+                except Exception: pass
+                try: _compt = _f3.result() or []
+                except Exception: pass
+
+        _lr_pct  = 87.745
+        _n_draw  = 2
+        _n_cand  = 15
+        _pr_lo   = 0.98
+        _pr_hi   = 1.02
+        if _detail:
+            _lr_pct = float(_detail.get("낙찰하한율") or _lr_pct)
+            _n_draw = int(_detail.get("추첨수")  or _n_draw)
+            _n_cand = int(_detail.get("후보수")  or _n_cand)
+            _agency = _detail.get("공고기관") or _agency
+            _bss_from_bid = _detail.get("기초금액")
+            if _bss_from_bid and float(_bss_from_bid) > 0:
+                _base_f = float(_bss_from_bid)
+            _pr_label = guess_price_range_label(_agency)
+            _pr_vals  = PRICE_RANGE_OPTIONS.get(_pr_label)
+            if _pr_vals:
+                _pr_lo = 1 + _pr_vals[0] / 100
+                _pr_hi = 1 + _pr_vals[1] / 100
+
+        _presmpt_f   = None
+        _prepar_pool = None
+        if _pd:
+            if _pd.get("기초금액"):
+                _base_f = _pd["기초금액"]
+            _presmpt_f = _pd.get("예정가격")
+            _pool = _pd.get("예비가격목록") or []
+            if len(_pool) >= 2:
+                _prepar_pool = _pool
+
+        _card_vp = None
+        if len(_compt) >= 3:
+            _ps = [x["예정가격"] for x in _compt if x["예정가격"] > 0]
+            if len(_ps) >= 3:
+                # 기초금액: 실제 예정가격 분포의 중앙값
+                _base_est = float(np.median(_ps))
+                if not _base_f or abs(_base_est - _base_f) / _base_f < 0.05:
+                    _base_f = _base_est
+                # 유효율: 전체 입찰자 중 자기 예정가격의 [낙찰하한율, 100%] 구간에 투찰한 비율
+                _lr_frac = _lr_pct / 100
+                _valid = sum(
+                    1 for x in _compt
+                    if x["예정가격"] > 0 and x["입찰금액"] > 0
+                    and x["예정가격"] * _lr_frac <= x["입찰금액"] <= x["예정가격"]
+                )
+                _card_vp = _valid / len(_compt) * 100
+
+        # 예정가격 역산 (위 API 실패 시)
+        if not _presmpt_f:
+            _presmpt_raw = _row.get("예정가격")
+            _lr_f = float(_lr) if pd.notna(_lr) and float(_lr) > 0 else None
+            if pd.notna(_presmpt_raw) and float(_presmpt_raw) > 0:
+                _presmpt_f = float(_presmpt_raw)
+            elif _award_f and _lr_f:
+                _presmpt_f = round(_award_f / (_lr_f / 100))
+
+        # 개찰완료 데이터 없으면 (수의계약 등) 시뮬레이션으로 fallback
+        if _card_vp is None and _award_f and _base_f and _base_f > 0:
+            if _prepar_pool:
+                _pool_arr = np.array(_prepar_pool, dtype=float)
+                _idx_r    = np.array([np.random.choice(len(_pool_arr), min(_n_draw, len(_pool_arr)), replace=False)
+                                      for _ in range(_N_SIM)])
+                _d_sim    = np.floor(_pool_arr[_idx_r].mean(axis=1))
+            else:
+                _cands = np.random.uniform(_pr_lo, _pr_hi, (_N_SIM, _n_cand)) * _base_f
+                _idx_r = np.array([np.random.choice(_n_cand, _n_draw, replace=False)
+                                   for _ in range(_N_SIM)])
+                _d_sim = np.floor(_cands[np.arange(_N_SIM)[:, None], _idx_r].mean(axis=1))
+            _f_sim   = np.ceil(np.round(_d_sim * (_lr_pct / 100), 5))
+            _card_vp = float(((_award_f >= _f_sim) & (_award_f <= _d_sim)).mean() * 100)
+
+        # 투찰률 = (입찰가격 - A) / (예정가격 - A) × 100, A=0 (API 미제공)
+        _tuchal = None
+        if _award_f and _presmpt_f and _presmpt_f > 0:
+            _tuchal = _award_f / _presmpt_f * 100
+
+        return {
+            "공고명":    _row.get("공고명", "-"),
+            "개찰일시":  str(_row.get("개찰일시", "-"))[:10],
+            "참가업체수": int(_row.get("참가업체수", 0) or 0),
+            "낙찰금액":  _award_f,
+            "기초금액":  _base_f,
+            "예정가격":  _presmpt_f,
+            "낙찰률":    float(_lr) if pd.notna(_lr) else None,
+            "낙찰하한율": _lr_pct,
+            "유효율":    _card_vp,
+            "투찰률":    _tuchal,
+        }
+
+    _rows_list = [r for _, r in _price_filtered.head(6).iterrows()]
+    with ThreadPoolExecutor(max_workers=6) as _ex:
+        _recent5 = list(_ex.map(_build_one, _rows_list))
+    return _recent5
+
+
+def render_cards(recent5: list, title: str = "#### 📋 직전 낙찰 사례 (동일 업종·지역 기준)"):
+    """카드 리스트를 3열 그리드로 렌더링."""
+    if not recent5:
+        return
+    st.markdown(title)
+    _rank_labels = ["직전", "2번 전", "3번 전", "4번 전", "5번 전", "6번 전"]
+
+    def _fmt_amt(v):
+        if v is None: return "-"
+        return f"{v:,.0f}원"
+
+    _COLS_PER_ROW = 3
+    for _row_start in range(0, len(recent5), _COLS_PER_ROW):
+        _row_recs = recent5[_row_start:_row_start + _COLS_PER_ROW]
+        _cols = st.columns(len(_row_recs))
+        for _ci, (_col, _rec) in enumerate(zip(_cols, _row_recs)):
+            _ci_abs  = _row_start + _ci
+            _parts   = int(_rec["참가업체수"])
+            _dt      = _rec["개찰일시"][:10] if _rec["개찰일시"] not in ("-", "") else "-"
+            _name    = _rec["공고명"][:28] + "…" if len(_rec["공고명"]) > 28 else _rec["공고명"]
+            _rate    = _rec.get("낙찰률")
+            _award   = _rec.get("낙찰금액")
+            _presmpt = _rec.get("예정가격")
+            _lrpct   = _rec.get("낙찰하한율")
+            _vp      = _rec.get("유효율")
+            _tuchal  = _rec.get("투찰률")
+            _rank_label = _rank_labels[_ci_abs]
+            _vp_color = (
+                "#e74c3c" if _vp is not None and _vp < 40 else
+                "#f39c12" if _vp is not None and _vp < 70 else
+                "#2ecc71"
+            )
+            _col.markdown(f"""
+<div style="background:#f0f4ff;border:1px solid #c5d0e6;border-radius:10px;
+padding:14px 14px;font-size:13px;line-height:1.8">
+  <div style="font-size:11px;color:#888;margin-bottom:4px">{_rank_label} ({_dt})</div>
+  <div style="font-size:12px;font-weight:600;color:#1f3c88;margin-bottom:8px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+  title="{_rec['공고명']}">{_name}</div>
+  <div>👥 <b>{_parts}개사</b> 참여</div>
+  <div>🎯 예정가격 <b>{_fmt_amt(_presmpt)}</b></div>
+  <div>🏆 최종입찰가 <b>{_fmt_amt(_award)}</b></div>
+  <div>📈 낙찰률 <b>{"%.3f" % _rate if _rate else "-"}%</b></div>
+  <div>🎲 투찰률 <b>{"%.3f" % _tuchal if _tuchal else "-"}%</b></div>
+  <div>📉 낙찰하한율 <b>{"%.3f" % _lrpct if _lrpct else "-"}%</b></div>
+  <div>✅ 유효율 <b style="color:{_vp_color}">{"%.1f" % _vp if _vp is not None else "-"}%</b></div>
+</div>""", unsafe_allow_html=True)
+
 
 def check_api_status() -> tuple[bool, str]:
     """API 연결 상태 확인. (성공여부, 에러메시지) 반환"""
@@ -361,6 +637,16 @@ if page == "💰 낙찰 예상가 계산기":
     _apply = st.session_state.get("apply_bid", {})
     _wkey = _apply.get("공고번호", "default")  # 공고 변경 시 위젯 재초기화용 key
 
+    # ── 직전 낙찰 사례 카드 (컬럼 위쪽 전체 너비) ──────────────────────
+    _cards_top = None
+    if "last_result" in st.session_state:
+        _cards_top = st.session_state["last_result"].get("recent5")
+    elif "preloaded_cards" in st.session_state:
+        _cards_top = st.session_state["preloaded_cards"]
+    if _cards_top:
+        render_cards(_cards_top, title="#### 📋 유사 낙찰 사례 (동일 업종·지역)")
+        st.markdown("---")
+
     col_input, col_result = st.columns([1, 2], gap="large")
 
     with col_input:
@@ -414,7 +700,7 @@ if page == "💰 낙찰 예상가 계산기":
             key=f"a_value_{_wkey}",
         )
         if a_value_input > 0:
-            st.caption(f"A값 적용: 낙찰하한금액 = (예정가 - {format_won(a_value_input)}) × {lower_rate_input}% + {format_won(a_value_input)}")
+            st.caption(f"A값 적용: 낙찰하한금액 = (예정가 - {format_won_exact(a_value_input)}) × {lower_rate_input}% + {format_won_exact(a_value_input)}")
 
         # 예비가격 범위 — 발주처 유형별 선택 (공고 불러오면 자동 설정)
         _range_labels = list(PRICE_RANGE_OPTIONS.keys())
@@ -505,26 +791,45 @@ if page == "💰 낙찰 예상가 계산기":
                     contract_type = loaded.get("계약방식", "") if loaded else ""
                     region        = loaded.get("참가제한지역", "") if loaded else ""
                     industry      = loaded.get("업종", "") if loaded else ""
+                    industry_cd   = loaded.get("업종코드", "") if loaded else ""
 
                     winner_df = pd.DataFrame()
                     _winner_is_demo = False
-                    try:
-                        _w_start = (datetime.now() - timedelta(days=180)).strftime("%Y%m%d") + "000000"
-                        _w_end   = datetime.now().strftime("%Y%m%d") + "235959"
-                        winner_df = api.get_winner_list(
-                            bid_type=bid_type,
-                            keyword=keyword,
-                            start_date=_w_start,
-                            end_date=_w_end,
-                            rows=500,
-                        )
-                    except Exception:
-                        pass
-                    if winner_df.empty:
+                    _w_start = (datetime.now() - timedelta(days=180)).strftime("%Y%m%d") + "000000"
+                    _w_end   = datetime.now().strftime("%Y%m%d") + "235959"
+
+                    # 단계적 API 호출: 지역+업종 → 지역만 → 전체
+                    # prtcptLmtRgnNm / indstrytyNm — stts PPSSrch 엔드포인트에서 실제 작동
+                    _MIN_RATES = 30
+                    def _valid_rate_count(df):
+                        if df.empty or "낙찰률" not in df.columns:
+                            return 0
+                        return int(df["낙찰률"].dropna().count())
+
+                    _rgn_full = region if region else ""        # 참가제한지역명 전체
+                    _ind_cd   = industry_cd if industry_cd else ""  # 업종코드 (indstrytyCd — 실제 작동)
+
+                    # 단계: (지역+업종코드) → (지역만) → (전체)
+                    for _rk, _ik in [(_rgn_full, _ind_cd), (_rgn_full, ""), ("", "")]:
+                        try:
+                            _df = api.get_winner_list(
+                                bid_type=bid_type,
+                                start_date=_w_start, end_date=_w_end, rows=500,
+                                prtcpt_lmt_rgn_nm=_rk,
+                                indstryty_cd=_ik,
+                            )
+                            if _valid_rate_count(_df) >= _MIN_RATES:
+                                winner_df = _df
+                                break
+                        except Exception:
+                            continue
+
+                    # 여전히 부족하면 데모 폴백
+                    if _valid_rate_count(winner_df) < 5:
                         winner_df = get_demo_winner_list(bid_type=bid_type, rows=200)
                         _winner_is_demo = True
 
-                    # 단계적 필터링 (지역·업종 포함)
+                    # 단계적 필터링 (통계용 — 금액대 포함)
                     winner_df, filter_desc = tiered_filter(
                         winner_df,
                         base_price=base_price_input,
@@ -532,12 +837,26 @@ if page == "💰 낙찰 예상가 계산기":
                         contract_type=contract_type,
                         region=region,
                         industry=industry,
+                        industry_cd=industry_cd,
                     )
 
                     result["stats_keyword"]    = keyword
                     result["stats_filter_desc"] = filter_desc
                     result["stats_is_demo"]    = _winner_is_demo
                     result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"], base_price=base_price_input)
+
+                    # 직전 낙찰 사례 카드 — 검색 페이지에서 미리 로드된 경우 재사용
+                    if "preloaded_cards" in st.session_state:
+                        result["recent5"] = st.session_state.pop("preloaded_cards")
+                    else:
+                        result["recent5"] = build_recent_cards(
+                            bid_type=bid_type,
+                            region=region,
+                            industry_cd=industry_cd if industry_cd else "",
+                            base_price=base_price_input,
+                            contract_type=contract_type,
+                        )
+
                     # 과거 데이터 기반 경쟁사 수 추정
                     result["estimated_comp"] = estimate_competitor_count(winner_df)
                 st.session_state["last_result"] = result
@@ -683,6 +1002,30 @@ border-radius:8px;padding:16px 20px;margin-bottom:12px;">
                 sc3.metric("표준편차",      f"{stats['std_rate']:.3f}%p")
                 sc4.metric("25~75% 구간",  f"{stats['rate_p25']:.2f}~{stats['rate_p75']:.2f}%")
 
+                with st.expander("📖 이 통계, 어떻게 활용하나요?"):
+                    _sj_rec_amt = int(stats['sajeong_median'] / 100 * r['base_price']) if stats.get('sajeong_median') else None
+                    st.markdown(f"""
+**📊 위 4개 지표 — 과거 낙찰자들이 예정가격의 몇 %로 투찰했는지**
+| 지표 | 의미 | 활용법 |
+|---|---|---|
+| 낙찰률 평균/중앙값 | 투찰가 ÷ 예정가격 × 100 | 이 % × 현재 예정가 추정치 = 참고 투찰가 |
+| 표준편차 | 낙찰률 분산도 | 클수록 낙찰가 예측 어려움 → 보수적 투찰 권장 |
+| 25~75% 구간 | 낙찰자 절반이 몰린 구간 | 이 구간 진입 시 중간 경쟁력 확보 |
+
+**🎯 아래 핵심 지표 — 기초금액 대비 실제 낙찰 경향 (사정률)**
+| 지표 | 의미 | 활용법 |
+|---|---|---|
+| 최빈 사정률 구간 | 낙찰자들이 **가장 많이 몰린** 기초금액 대비 % | 경쟁이 가장 치열한 구간. 낙찰 확률 최대화 시 진입 |
+| 사정률 중앙값 → 금액 | 안정적인 낙찰 기준가 | **바로 옆 금액이 추천 투찰가** |
+| 과거 1등 유효율 최빈 | 과거 낙찰자들이 가졌던 유효 확률 구간 | 이 유효율로 투찰가를 맞추면 과거 낙찰자와 같은 공격성 |
+| 과거 1등 유효율 평균 | 낙찰자들의 평균 유효 확률 | 이보다 **낮게** 투찰 = 공격적, **높게** = 안전 |
+
+**💡 의사결정 요약**
+- **안전 우선** → 사정률 중앙값 금액({format_won_exact(_sj_rec_amt) if _sj_rec_amt else '-'})으로 투찰
+- **경쟁 우선** → 최빈 사정률 구간 **하단**으로 낮춰 투찰
+- **유효율이 낮을수록** 공격적(하한 미달 위험↑), **높을수록** 안전(낙찰 경쟁력↓)
+""")
+
                 # ── 가격 선택 핵심 지표 ──────────────────────────────────
                 if stats.get("sajeong_mean"):
                     # 과거 낙찰가 기준 유효율 계산
@@ -738,6 +1081,7 @@ border-radius:12px;padding:18px 22px;margin-top:10px;">
     유효율이 높을수록 안전하지만 낙찰 경쟁력은 낮아집니다.
   </div>
 </div>""", unsafe_allow_html=True)
+
 
             # ── 통합 시각화 차트 ─────────────────────────────────────────
             tab_chart1, tab_chart2 = st.tabs(["투찰가별 유효 확률", "예정가격 분포"])
@@ -964,11 +1308,16 @@ border-radius:12px;padding:18px 22px;margin-top:10px;">
                         break
                     _p_high += 1
 
+                _presmpt_med = float(np.median(_dist))
+                _av = float(_sim_av) if _sim_av else 0.0
+                _denom = _presmpt_med - _av
                 _micro_rows = []
                 for p in range(_p_low, _p_high + 1):
                     s, prob = _calc_prob(p)
+                    _tuchal = (p - _av) / _denom * 100 if _denom > 0 else None
                     _micro_rows.append({
                         "투찰가": f"{p:,}원",
+                        "투찰률": f"{_tuchal:.3f}%" if _tuchal is not None else "-",
                         "유효 횟수": f"{s:,}",
                         "유효 확률": f"{prob:.2f}%",
                     })
@@ -1034,6 +1383,7 @@ border-radius:12px;padding:18px 22px;margin-top:10px;">
 
         else:
             st.info("왼쪽에서 기초금액을 입력하고 '계산하기' 버튼을 누르세요.")
+
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1124,6 +1474,10 @@ elif page == "🔍 입찰공고 검색":
             # 1단계: Supabase 캐시 확인
             info = cache_get_bid(bid_no)
 
+            # 캐시에 업종코드 키 자체가 없으면 구버전 캐시 → 무효 처리
+            if info and "업종코드" not in info:
+                info = None
+
             if not info:
                 # 2단계: 검색 결과 row에서 직접 추출 (API 재호출 없음 → 즉시)
                 _presmpt = float(row.get("추정금액") or 0)
@@ -1152,15 +1506,31 @@ elif page == "🔍 입찰공고 검색":
                 except Exception:
                     _draw = 4
 
-                # 참가제한지역 / 업종
+                # 참가제한지역 / 업종 — 실제 응답 필드명 기준
                 _region = str(
+                    row.get("cnstrtsiteRgnNm") or    # 공사현장지역명 (공사)
                     row.get("prtcptLmtRgnNm") or
                     row.get("ntceInsttRgnNm") or ""
                 ).strip()
                 _industry = str(
+                    row.get("mainCnsttyNm") or        # 주요업종명 — 업종제한사항 (예: "전기공사업")
+                    row.get("pubPrcrmntClsfcNm") or   # 공공조달분류명 (용역)
+                    row.get("pubPrcrmntMidClsfcNm") or
+                    row.get("dtilPrdctClsfcNoNm") or  # 품목분류명 (물품)
                     row.get("srvceDivNm") or row.get("용역구분") or
+                    row.get("mainCnstwkBsnsNm") or
                     row.get("mainCnstwkBsns") or row.get("prdctClsfcNm") or ""
                 ).strip()
+
+                # 업종/지역/기초금액을 get_bid_by_no로 정확히 조회
+                _industry_cd = ""
+                _full = api.get_bid_by_no(bid_no, bid_type=_stype)
+                if _full:
+                    _industry    = _full.get("업종", _industry) or _industry
+                    _industry_cd = _full.get("업종코드", "") or ""
+                    _region      = _full.get("참가제한지역", _region) or _region
+                    if _full.get("기초금액"):
+                        base = _full["기초금액"]
 
                 info = {
                     "공고번호":      bid_no,
@@ -1175,12 +1545,24 @@ elif page == "🔍 입찰공고 검색":
                     "추첨수":       _draw,
                     "참가제한지역":  _region,
                     "업종":         _industry,
+                    "업종코드":     _industry_cd,
                     "예가범위_라벨": guess_price_range_label(_agency),
                 }
                 cache_save_bid(bid_no, info)
 
-            st.session_state["apply_bid"] = info
+            st.session_state["apply_bid"]  = info
             st.session_state["loaded_bid"] = info
+            # 카드 미리 로드 → 계산기 페이지에서 바로 표시
+            with st.spinner("유사 낙찰 사례 조회 중..."):
+                _cards = build_recent_cards(
+                    bid_type=_stype,
+                    region=info.get("참가제한지역", ""),
+                    industry_cd=info.get("업종코드", ""),
+                    base_price=info.get("기초금액") or 100_000_000,
+                    contract_type=info.get("계약방식", ""),
+                    before_date=info.get("개찰일시", ""),
+                )
+            st.session_state["preloaded_cards"] = _cards
             st.session_state["nav_to"] = "💰 낙찰 예상가 계산기"
             st.rerun()
 
