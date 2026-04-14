@@ -806,57 +806,53 @@ if page == "💰 낙찰 예상가 계산기":
                     industry      = loaded.get("업종", "") if loaded else ""
                     industry_cd   = loaded.get("업종코드", "") if loaded else ""
 
-                    winner_df = pd.DataFrame()
-                    _winner_is_demo = False
-                    _w_start = (datetime.now() - timedelta(days=180)).strftime("%Y%m%d") + "000000"
-                    _w_end   = datetime.now().strftime("%Y%m%d") + "235959"
-
-                    # 단계적 API 호출: 지역+업종 → 지역만 → 전체
-                    # prtcptLmtRgnNm / indstrytyNm — stts PPSSrch 엔드포인트에서 실제 작동
-                    _MIN_RATES = 30
-                    def _valid_rate_count(df):
-                        if df.empty or "낙찰률" not in df.columns:
-                            return 0
-                        return int(df["낙찰률"].dropna().count())
-
-                    _rgn_full = region if region else ""        # 참가제한지역명 전체
-                    _ind_cd   = industry_cd if industry_cd else ""  # 업종코드 (indstrytyCd — 실제 작동)
-
-                    # 단계: (지역+업종코드) → (지역만) → (전체)
-                    for _rk, _ik in [(_rgn_full, _ind_cd), (_rgn_full, ""), ("", "")]:
-                        try:
-                            _df = api.get_winner_list(
-                                bid_type=bid_type,
-                                start_date=_w_start, end_date=_w_end, rows=500,
-                                prtcpt_lmt_rgn_nm=_rk,
-                                indstryty_cd=_ik,
-                            )
-                            if _valid_rate_count(_df) >= _MIN_RATES:
-                                winner_df = _df
-                                break
-                        except Exception:
-                            continue
-
-                    # 여전히 부족하면 데모 폴백
-                    if _valid_rate_count(winner_df) < 5:
-                        winner_df = get_demo_winner_list(bid_type=bid_type, rows=200)
-                        _winner_is_demo = True
-
-                    # 단계적 필터링 (통계용 — 금액대 포함)
-                    winner_df, filter_desc = tiered_filter(
-                        winner_df,
-                        base_price=base_price_input,
-                        agency=agency,
-                        contract_type=contract_type,
-                        region=region,
-                        industry=industry,
-                        industry_cd=industry_cd,
-                    )
-
-                    result["stats_keyword"]    = keyword
-                    result["stats_filter_desc"] = filter_desc
-                    result["stats_is_demo"]    = _winner_is_demo
-                    result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"], base_price=base_price_input)
+                    # 과거 180일 낙찰 데이터 기반 통계 추천 — 임시 비활성 (나중에 다시 사용)
+                    # winner_df = pd.DataFrame()
+                    # _winner_is_demo = False
+                    # _w_start = (datetime.now() - timedelta(days=180)).strftime("%Y%m%d") + "000000"
+                    # _w_end   = datetime.now().strftime("%Y%m%d") + "235959"
+                    #
+                    # _MIN_RATES = 30
+                    # def _valid_rate_count(df):
+                    #     if df.empty or "낙찰률" not in df.columns:
+                    #         return 0
+                    #     return int(df["낙찰률"].dropna().count())
+                    #
+                    # _rgn_full = region if region else ""
+                    # _ind_cd   = industry_cd if industry_cd else ""
+                    #
+                    # for _rk, _ik in [(_rgn_full, _ind_cd), (_rgn_full, ""), ("", "")]:
+                    #     try:
+                    #         _df = api.get_winner_list(
+                    #             bid_type=bid_type,
+                    #             start_date=_w_start, end_date=_w_end, rows=500,
+                    #             prtcpt_lmt_rgn_nm=_rk,
+                    #             indstryty_cd=_ik,
+                    #         )
+                    #         if _valid_rate_count(_df) >= _MIN_RATES:
+                    #             winner_df = _df
+                    #             break
+                    #     except Exception:
+                    #         continue
+                    #
+                    # if _valid_rate_count(winner_df) < 5:
+                    #     winner_df = get_demo_winner_list(bid_type=bid_type, rows=200)
+                    #     _winner_is_demo = True
+                    #
+                    # winner_df, filter_desc = tiered_filter(
+                    #     winner_df,
+                    #     base_price=base_price_input,
+                    #     agency=agency,
+                    #     contract_type=contract_type,
+                    #     region=region,
+                    #     industry=industry,
+                    #     industry_cd=industry_cd,
+                    # )
+                    #
+                    # result["stats_keyword"]    = keyword
+                    # result["stats_filter_desc"] = filter_desc
+                    # result["stats_is_demo"]    = _winner_is_demo
+                    # result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"], base_price=base_price_input)
 
                     # 직전 낙찰 사례 카드 — 임시 비활성 (나중에 다시 사용)
                     # if "preloaded_cards" in st.session_state:
