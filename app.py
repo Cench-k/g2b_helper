@@ -649,15 +649,15 @@ if page == "💰 낙찰 예상가 계산기":
     _apply = st.session_state.get("apply_bid", {})
     _wkey = _apply.get("공고번호", "default")  # 공고 변경 시 위젯 재초기화용 key
 
-    # ── 직전 낙찰 사례 카드 (컬럼 위쪽 전체 너비) ──────────────────────
-    _cards_top = None
-    if "last_result" in st.session_state:
-        _cards_top = st.session_state["last_result"].get("recent5")
-    elif "preloaded_cards" in st.session_state:
-        _cards_top = st.session_state["preloaded_cards"]
-    if _cards_top:
-        render_cards(_cards_top, title="#### 📋 유사 낙찰 사례 (동일 업종·지역)")
-        st.markdown("---")
+    # ── 직전 낙찰 사례 카드 (컬럼 위쪽 전체 너비) — 미노출 (나중에 다시 사용) ──
+    # _cards_top = None
+    # if "last_result" in st.session_state:
+    #     _cards_top = st.session_state["last_result"].get("recent5")
+    # elif "preloaded_cards" in st.session_state:
+    #     _cards_top = st.session_state["preloaded_cards"]
+    # if _cards_top:
+    #     render_cards(_cards_top, title="#### 📋 유사 낙찰 사례 (동일 업종·지역)")
+    #     st.markdown("---")
 
     col_input, col_result = st.columns([1, 2], gap="large")
 
