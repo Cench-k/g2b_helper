@@ -858,17 +858,17 @@ if page == "💰 낙찰 예상가 계산기":
                     result["stats_is_demo"]    = _winner_is_demo
                     result["stats"] = recommend_from_stats(winner_df, result["expected_price_mean"], base_price=base_price_input)
 
-                    # 직전 낙찰 사례 카드 — 검색 페이지에서 미리 로드된 경우 재사용
-                    if "preloaded_cards" in st.session_state:
-                        result["recent5"] = st.session_state.pop("preloaded_cards")
-                    else:
-                        result["recent5"] = build_recent_cards(
-                            bid_type=bid_type,
-                            region=region,
-                            industry_cd=industry_cd if industry_cd else "",
-                            base_price=base_price_input,
-                            contract_type=contract_type,
-                        )
+                    # 직전 낙찰 사례 카드 — 임시 비활성 (나중에 다시 사용)
+                    # if "preloaded_cards" in st.session_state:
+                    #     result["recent5"] = st.session_state.pop("preloaded_cards")
+                    # else:
+                    #     result["recent5"] = build_recent_cards(
+                    #         bid_type=bid_type,
+                    #         region=region,
+                    #         industry_cd=industry_cd if industry_cd else "",
+                    #         base_price=base_price_input,
+                    #         contract_type=contract_type,
+                    #     )
 
                     # 과거 데이터 기반 경쟁사 수 추정
                     result["estimated_comp"] = estimate_competitor_count(winner_df)
