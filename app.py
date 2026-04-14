@@ -866,8 +866,8 @@ if page == "💰 낙찰 예상가 계산기":
                     #         contract_type=contract_type,
                     #     )
 
-                    # 과거 데이터 기반 경쟁사 수 추정
-                    result["estimated_comp"] = estimate_competitor_count(winner_df)
+                    # 과거 데이터 기반 경쟁사 수 추정 — 통계 조회 비활성화로 함께 스킵
+                    # result["estimated_comp"] = estimate_competitor_count(winner_df)
                 st.session_state["last_result"] = result
             else:
                 result = st.session_state["last_result"]
