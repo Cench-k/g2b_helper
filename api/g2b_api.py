@@ -239,6 +239,7 @@ class G2BAPI:
         bid_no_clean = bid_no.split("-")[0].strip()
         try:
             data = self._get(url, {
+                "inqryDiv": "2",
                 "bidNtceNo": bid_no_clean,
                 "numOfRows": 20,   # 최대 15개 후보 + 여유
                 "pageNo": 1,
@@ -249,6 +250,7 @@ class G2BAPI:
             # 첫 레코드에서 공통 필드 추출
             plnprc = float(items[0].get("plnprc") or 0) or None
             bssamt = float(items[0].get("bssamt") or 0) or None
+            a_val  = float(items[0].get("PrearngPrcePurcnstcst") or 0) or None
             if not plnprc and not bssamt:
                 return None
             # 전체 레코드에서 예비가격 후보 수집 (번호순 정렬)
@@ -257,7 +259,7 @@ class G2BAPI:
                 v = float(it.get("bsisPlnprc") or 0)
                 if v > 0:
                     candidates.append(v)
-            return {"예정가격": plnprc, "기초금액": bssamt, "예비가격목록": candidates}
+            return {"예정가격": plnprc, "기초금액": bssamt, "예비가격목록": candidates, "A값": a_val}
         except Exception:
             return None
 

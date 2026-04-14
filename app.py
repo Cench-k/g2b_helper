@@ -242,6 +242,9 @@ def build_recent_cards(
             if len(_pool) >= 2:
                 _prepar_pool = _pool
 
+        # A값 (순공사원가) — 예비가격상세 API에서
+        _a_f = float(_pd.get("A값") or 0) if _pd else 0.0
+
         _card_vp = None
         if len(_compt) >= 3:
             _ps = [x["예정가격"] for x in _compt if x["예정가격"] > 0]
@@ -250,12 +253,14 @@ def build_recent_cards(
                 _base_est = float(np.median(_ps))
                 if not _base_f or abs(_base_est - _base_f) / _base_f < 0.05:
                     _base_f = _base_est
-                # 유효율: 전체 입찰자 중 자기 예정가격의 [낙찰하한율, 100%] 구간에 투찰한 비율
+                # 유효율: 자기 예정가격에 대한 A값 반영 유효 하한 이상 투찰한 비율
                 _lr_frac = _lr_pct / 100
+                def _min_bid(p):
+                    return (p - _a_f) * _lr_frac + _a_f if _a_f > 0 else p * _lr_frac
                 _valid = sum(
                     1 for x in _compt
                     if x["예정가격"] > 0 and x["입찰금액"] > 0
-                    and x["예정가격"] * _lr_frac <= x["입찰금액"] <= x["예정가격"]
+                    and _min_bid(x["예정가격"]) <= x["입찰금액"] <= x["예정가격"]
                 )
                 _card_vp = _valid / len(_compt) * 100
 
@@ -283,10 +288,17 @@ def build_recent_cards(
             _f_sim   = np.ceil(np.round(_d_sim * (_lr_pct / 100), 5))
             _card_vp = float(((_award_f >= _f_sim) & (_award_f <= _d_sim)).mean() * 100)
 
-        # 투찰률 = (입찰가격 - A) / (예정가격 - A) × 100, A=0 (API 미제공)
+        # 유효 낙찰하한율 = ((예정-A) × 낙찰하한율 + A) / 예정 × 100
+        _lr_eff = _lr_pct
+        if _a_f > 0 and _presmpt_f and _presmpt_f > 0:
+            _lr_eff = ((_presmpt_f - _a_f) * (_lr_pct / 100) + _a_f) / _presmpt_f * 100
+
+        # 투찰률 = (입찰가격 - A) / (예정가격 - A) × 100
         _tuchal = None
         if _award_f and _presmpt_f and _presmpt_f > 0:
-            _tuchal = _award_f / _presmpt_f * 100
+            _denom = _presmpt_f - _a_f
+            if _denom > 0:
+                _tuchal = (_award_f - _a_f) / _denom * 100
 
         return {
             "공고명":    _row.get("공고명", "-"),
@@ -296,7 +308,7 @@ def build_recent_cards(
             "기초금액":  _base_f,
             "예정가격":  _presmpt_f,
             "낙찰률":    float(_lr) if pd.notna(_lr) else None,
-            "낙찰하한율": _lr_pct,
+            "낙찰하한율": _lr_eff,
             "유효율":    _card_vp,
             "투찰률":    _tuchal,
         }
@@ -691,9 +703,10 @@ if page == "💰 낙찰 예상가 계산기":
         st.markdown("---")
 
         # A값 (순공사원가) — 해당 공고에 적용되는 경우에만 입력
+        _a_default = int(_apply.get("A값") or 0)
         a_value_input = st.number_input(
             "A값 (순공사원가 등, 원) — 해당 없으면 0",
-            min_value=0, value=0, step=1_000_000, format="%d",
+            min_value=0, value=_a_default, step=1_000_000, format="%d",
             help="A값 적용 공고는 낙찰하한금액 산식이 달라집니다.\n"
                  "적용 산식: (예정가격 - A값) × 낙찰하한율 + A값\n"
                  "공고문에 순공사원가·국민연금·건강보험료·퇴직공제부금비 합산액 명시 시 입력하세요.",
@@ -1532,6 +1545,13 @@ elif page == "🔍 입찰공고 검색":
                     if _full.get("기초금액"):
                         base = _full["기초금액"]
 
+                _a_val = 0
+                try:
+                    _pd_info = api.get_price_detail(bid_no, _stype)
+                    if _pd_info and _pd_info.get("A값"):
+                        _a_val = int(_pd_info["A값"])
+                except Exception:
+                    pass
                 info = {
                     "공고번호":      bid_no,
                     "공고명":       str(row.get("공고명", "")),
@@ -1547,6 +1567,7 @@ elif page == "🔍 입찰공고 검색":
                     "업종":         _industry,
                     "업종코드":     _industry_cd,
                     "예가범위_라벨": guess_price_range_label(_agency),
+                    "A값":          _a_val,
                 }
                 cache_save_bid(bid_no, info)
 
