@@ -1318,6 +1318,7 @@ border-radius:12px;padding:18px 22px;margin-top:10px;">
                     _micro_rows.append({
                         "투찰가": f"{p:,}원",
                         "투찰률": f"{_tuchal:.3f}%" if _tuchal is not None else "-",
+                        "낙찰하한율": f"{_sim_lr*100:.3f}%",
                         "유효 횟수": f"{s:,}",
                         "유효 확률": f"{prob:.2f}%",
                     })
