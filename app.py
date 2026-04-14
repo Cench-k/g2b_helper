@@ -1573,17 +1573,17 @@ elif page == "🔍 입찰공고 검색":
 
             st.session_state["apply_bid"]  = info
             st.session_state["loaded_bid"] = info
-            # 카드 미리 로드 → 계산기 페이지에서 바로 표시
-            with st.spinner("유사 낙찰 사례 조회 중..."):
-                _cards = build_recent_cards(
-                    bid_type=_stype,
-                    region=info.get("참가제한지역", ""),
-                    industry_cd=info.get("업종코드", ""),
-                    base_price=info.get("기초금액") or 100_000_000,
-                    contract_type=info.get("계약방식", ""),
-                    before_date=info.get("개찰일시", ""),
-                )
-            st.session_state["preloaded_cards"] = _cards
+            # 카드 미리 로드 → 계산기 페이지에서 바로 표시 (임시 비활성, 나중에 다시 사용)
+            # with st.spinner("유사 낙찰 사례 조회 중..."):
+            #     _cards = build_recent_cards(
+            #         bid_type=_stype,
+            #         region=info.get("참가제한지역", ""),
+            #         industry_cd=info.get("업종코드", ""),
+            #         base_price=info.get("기초금액") or 100_000_000,
+            #         contract_type=info.get("계약방식", ""),
+            #         before_date=info.get("개찰일시", ""),
+            #     )
+            # st.session_state["preloaded_cards"] = _cards
             st.session_state["nav_to"] = "💰 낙찰 예상가 계산기"
             st.rerun()
 
