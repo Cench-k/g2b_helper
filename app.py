@@ -1314,11 +1314,9 @@ border-radius:12px;padding:18px 22px;margin-top:10px;">
                 _micro_rows = []
                 for p in range(_p_low, _p_high + 1):
                     s, prob = _calc_prob(p)
-                    _tuchal_raw = p / _presmpt_med * 100 if _presmpt_med > 0 else None
                     _tuchal_adj = (p - _av) / _denom * 100 if _denom > 0 else None
                     _micro_rows.append({
                         "투찰가": f"{p:,}원",
-                        "투찰률(%)": f"{_tuchal_raw:.3f}" if _tuchal_raw is not None else "-",
                         "(투찰가-A)/(예정가-A)×100": f"{_tuchal_adj:.3f}" if _tuchal_adj is not None else "-",
                         "유효 횟수": f"{s:,}",
                         "유효 확률": f"{prob:.2f}%",
