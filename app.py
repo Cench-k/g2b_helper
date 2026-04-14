@@ -1311,6 +1311,11 @@ border-radius:12px;padding:18px 22px;margin-top:10px;">
                 _presmpt_med = float(np.median(_dist))
                 _av = float(_sim_av) if _sim_av else 0.0
                 _denom = _presmpt_med - _av
+                # 유효 낙찰하한율 = 낙찰하한금액 / 예정가격 × 100 (A값 반영)
+                _eff_lr_pct = (
+                    ((_presmpt_med - _av) * _sim_lr + _av) / _presmpt_med * 100
+                    if _presmpt_med > 0 else _sim_lr * 100
+                )
                 _micro_rows = []
                 for p in range(_p_low, _p_high + 1):
                     s, prob = _calc_prob(p)
@@ -1318,7 +1323,7 @@ border-radius:12px;padding:18px 22px;margin-top:10px;">
                     _micro_rows.append({
                         "투찰가": f"{p:,}원",
                         "투찰률": f"{_tuchal:.3f}%" if _tuchal is not None else "-",
-                        "낙찰하한율": f"{_sim_lr*100:.3f}%",
+                        "유효 낙찰하한율": f"{_eff_lr_pct:.3f}%",
                         "유효 횟수": f"{s:,}",
                         "유효 확률": f"{prob:.2f}%",
                     })
